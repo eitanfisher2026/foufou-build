@@ -21,6 +21,7 @@ const GOOGLE_KEY   = 'AIzaSyCE598tSisniM66ApqRvOyOq4svTf6pLHc';
 const PLACES_URL   = 'https://places.googleapis.com/v1/places:searchText';
 const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
 const OSM_TILES    = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+const VERSION = '0.2.3';
 const COLORS = ['#4a90d9','#e8a838','#d95555','#3bba7e','#d97eb5','#7c7ce0','#9b7ed9','#2eb8c9','#e08540','#b36dd9','#38b3a0','#c93d5a'];
 
 // Hebrew word map -- longer keys must match before shorter ones (see suggestHebrew)
@@ -177,15 +178,25 @@ const Toast = ({ msg, type, onDone }) => {
 };
 
 // Leaflet Map
-// Uses position:absolute inside a relative wrapper so Leaflet always gets a definite pixel size.
-// mapReady state is set after Leaflet initialises; the redraw effect depends on it so it always
-// runs with up-to-date props rather than the stale closure of the init effect.
+// The div ref is given an explicit pixel height via JS so Leaflet always sees a real container.
+// mapReady state triggers the redraw effect with fresh props (avoids stale closure in init effect).
 const AreaMap = ({ areas, selectedIdx, cityLat, cityLng, allCityRadius, onSelect }) => {
   const wrapRef   = useRef(null);
   const divRef    = useRef(null);
+  const [height, setHeight] = useState(400);
   const mapRef    = useRef(null);
   const layersRef = useRef([]);
   const [mapReady, setMapReady] = useState(false);
+
+  // Measure parent height and keep it updated
+  useEffect(() => {
+    const measure = () => {
+      if (wrapRef.current) setHeight(wrapRef.current.getBoundingClientRect().height || window.innerHeight - 52);
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, []);
 
   // Init Leaflet once
   useEffect(() => {
@@ -197,8 +208,7 @@ const AreaMap = ({ areas, selectedIdx, cityLat, cityLng, allCityRadius, onSelect
         maxZoom: 19
       }).addTo(map);
       mapRef.current = map;
-      // Let the DOM settle before Leaflet measures the container
-      setTimeout(() => { map.invalidateSize(); setMapReady(true); }, 100);
+      setTimeout(() => { map.invalidateSize(); setMapReady(true); }, 200);
     });
   }, []);
 
@@ -260,8 +270,8 @@ const AreaMap = ({ areas, selectedIdx, cityLat, cityLng, allCityRadius, onSelect
   }, [mapReady, areas, selectedIdx]);
 
   return (
-    <div ref={wrapRef} style={{ position: 'relative', width: '100%', height: '100%' }}>
-      <div ref={divRef} style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} />
+    <div ref={wrapRef} style={{ width: '100%', height: '100%' }}>
+      <div ref={divRef} style={{ width: '100%', height: Math.max(height, 300) + 'px' }} />
     </div>
   );
 };
@@ -402,9 +412,9 @@ const AddCityFlow = ({ showToast, onDone }) => {
       }
 
       const builtAreas = processed.map((a, i) => ({
-        id: toId(a.labelEn || ('area_' + i)),
-        labelEn: a.labelEn || '',
-        label: suggestHebrew(a.labelEn || ''),
+        id: toId(a.nameEn || a.labelEn || ('area_' + i)),
+        labelEn: a.nameEn || a.labelEn || '',
+        label: suggestHebrew(a.nameEn || a.labelEn || ''),
         descEn: '', desc: '',
         lat: roundCoord(a.lat), lng: roundCoord(a.lng),
         radius: Math.round((a.radius || 1200) / 100) * 100,
@@ -734,7 +744,7 @@ const FouFouBuild = () => {
               <span className="text-2xl">🏗️</span>
               <div>
                 <div className="font-bold text-slate-800 text-lg leading-tight">FouFou Build</div>
-                <div className="text-xs text-slate-400">City management</div>
+                <div className="text-xs text-slate-400">City management · v{VERSION}</div>
               </div>
             </div>
             <div className="flex items-center gap-3">
