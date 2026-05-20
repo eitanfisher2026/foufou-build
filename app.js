@@ -1,4 +1,4 @@
-// FouFou Build -- City management tool
+﻿// FouFou Build -- City management tool
 // Copyright 2026 Eitan Fisher. All Rights Reserved.
 
 const { useState, useEffect, useRef } = React;
@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION      = '0.2.8';
+const VERSION      = '0.2.9';
 const GOOGLE_KEY   = 'AIzaSyCE598tSisniM66ApqRvOyOq4svTf6pLHc';
 const PLACES_URL   = 'https://places.googleapis.com/v1/places:searchText';
 const OVERPASS_ENDPOINTS = [
@@ -31,15 +31,15 @@ const MAP_ATTR     = '&copy; <a href="https://www.maptiler.com/">MapTiler</a> &c
 const COLORS = ['#4a90d9','#e8a838','#d95555','#3bba7e','#d97eb5','#7c7ce0','#9b7ed9','#2eb8c9','#e08540','#b36dd9','#38b3a0','#c93d5a'];
 
 const HE_WORDS = {
-  'old city': 'העיר העתיקה', 'old town': 'העיר העתיקה',
-  'city center': 'מרכז העיר', 'city centre': 'מרכז העיר', 'downtown': 'מרכז העיר', 'center': 'מרכז',
-  'northeast': 'צפון מזרח', 'northwest': 'צפון מערב',
-  'southeast': 'דרום מזרח', 'southwest': 'דרום מערב',
-  'north': 'צפון', 'south': 'דרום', 'east': 'מזרח', 'west': 'מערב',
-  'port': 'נמל', 'harbor': 'נמל', 'harbour': 'נמל',
-  'beach': 'חוף', 'riverside': 'גדת הנהר', 'waterfront': 'מול המים',
-  'market': 'שוק', 'park': 'פארק', 'chinatown': "צ'יינה טאון",
-  'uptown': 'אפטאון', 'midtown': 'מידטאון',
+  'old city': '׳”׳¢׳™׳¨ ׳”׳¢׳×׳™׳§׳”', 'old town': '׳”׳¢׳™׳¨ ׳”׳¢׳×׳™׳§׳”',
+  'city center': '׳׳¨׳›׳– ׳”׳¢׳™׳¨', 'city centre': '׳׳¨׳›׳– ׳”׳¢׳™׳¨', 'downtown': '׳׳¨׳›׳– ׳”׳¢׳™׳¨', 'center': '׳׳¨׳›׳–',
+  'northeast': '׳¦׳₪׳•׳ ׳׳–׳¨׳—', 'northwest': '׳¦׳₪׳•׳ ׳׳¢׳¨׳‘',
+  'southeast': '׳“׳¨׳•׳ ׳׳–׳¨׳—', 'southwest': '׳“׳¨׳•׳ ׳׳¢׳¨׳‘',
+  'north': '׳¦׳₪׳•׳', 'south': '׳“׳¨׳•׳', 'east': '׳׳–׳¨׳—', 'west': '׳׳¢׳¨׳‘',
+  'port': '׳ ׳׳', 'harbor': '׳ ׳׳', 'harbour': '׳ ׳׳',
+  'beach': '׳—׳•׳£', 'riverside': '׳’׳“׳× ׳”׳ ׳”׳¨', 'waterfront': '׳׳•׳ ׳”׳׳™׳',
+  'market': '׳©׳•׳§', 'park': '׳₪׳׳¨׳§', 'chinatown': "׳¦'׳™׳™׳ ׳” ׳˜׳׳•׳",
+  'uptown': '׳׳₪׳˜׳׳•׳', 'midtown': '׳׳™׳“׳˜׳׳•׳',
 };
 
 // Sort by key length so "northeast" matches before "north"
@@ -105,21 +105,25 @@ async function fetchWikiRefMap(cityName) {
   return '';
 }
 
-// Try each Overpass endpoint in order; return parsed JSON or null
+// Try each Overpass endpoint with 8s timeout; return parsed JSON or null.
+// Uses AbortController (broad browser support) not AbortSignal.timeout().
 async function fetchOverpass(query) {
   for (const endpoint of OVERPASS_ENDPOINTS) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
     try {
       const resp = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: 'data=' + encodeURIComponent(query),
-        signal: AbortSignal.timeout(20000)
+        signal: ctrl.signal
       });
+      clearTimeout(timer);
       if (!resp.ok) continue;
       const text = await resp.text();
-      if (text.trimStart().startsWith('<')) continue; // XML error / HTML page
+      if (text.trimStart().startsWith('<')) continue;
       return JSON.parse(text);
-    } catch(e) { continue; }
+    } catch(e) { clearTimeout(timer); continue; }
   }
   return null;
 }
@@ -206,7 +210,7 @@ const Toast = ({ msg, type, onDone }) => {
   );
 };
 
-// ─── Leaflet Map ──────────────────────────────────────────────────────────────
+// ג”€ג”€ג”€ Leaflet Map ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€
 // Key fixes:
 //   1. Map initialised with explicit center+zoom so flyTo never crashes on uninitialised map.
 //   2. cityLat/cityLng stored in refs so the init effect closure always has current values.
@@ -289,7 +293,7 @@ const AreaMap = ({ areas, selectedIdx, cityLat, cityLng, allCityRadius, onSelect
   return <div ref={divRef} style={{ width:'100%', height:'100%' }} />;
 };
 
-// ─── Area Editor Panel ────────────────────────────────────────────────────────
+// ג”€ג”€ג”€ Area Editor Panel ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€
 const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown }) => {
   if (!area) return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center',
@@ -365,7 +369,7 @@ const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown
   );
 };
 
-// ─── Shared review layout (used by AddCityFlow and CityEditor) ────────────────
+// ג”€ג”€ג”€ Shared review layout (used by AddCityFlow and CityEditor) ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€
 const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
   cityLat: initLat, cityLng: initLng, allCityRadius: initRadius,
   initMeta, onBack, onSave, saving, extraButton, onCityConfigChange }) => {
@@ -375,7 +379,7 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
   const [cityLng, setCityLng]           = useState(initLng || 20);
   const [allCityRadius, setAllCityRadius] = useState(initRadius || 15000);
   // City metadata
-  const [cfgIcon,        setCfgIcon]        = useState(initMeta?.icon || '🏙️');
+  const [cfgIcon,        setCfgIcon]        = useState(initMeta?.icon || 'נ™ן¸');
   const [cfgNameEn,      setCfgNameEn]      = useState(initMeta?.nameEn || '');
   const [cfgNameHe,      setCfgNameHe]      = useState(initMeta?.nameHe || '');
   const [dayStartHour,   setDayStartHour]   = useState(initMeta?.dayStartHour ?? 7);
@@ -479,13 +483,13 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
               style={{ padding:'6px 10px', fontSize:12, border:'1px solid #e2e8f0',
                 borderRadius:8, cursor:'pointer', fontWeight:600,
                 background: showRef ? '#fef3c7' : '#f8fafc', color: showRef ? '#d97706' : '#475569' }}>
-              🗺️ Reference
+              נ—÷ן¸ Reference
             </button>
             <button onClick={() => setShowCfg(v => !v)}
               style={{ padding:'6px 10px', fontSize:12, border:'1px solid #e2e8f0',
                 borderRadius:8, cursor:'pointer', fontWeight:600,
                 background: showCfg ? '#eff6ff' : '#f8fafc', color: showCfg ? '#2563eb' : '#475569' }}>
-              ⚙️ City
+              ג™ן¸ City
             </button>
             <button onClick={addArea}
               style={{ padding:'6px 10px', fontSize:12, background:'#f1f5f9', border:'none',
@@ -578,7 +582,7 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
                   placeholder="Paste Wikipedia or any neighbourhood map image URL"
                   style={{ flex:1, minWidth:200, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
                 {refMapUrl && <a href={refMapUrl} target="_blank" rel="noreferrer"
-                  style={{ padding:'4px 9px', fontSize:11, background:'#d97706', color:'white', borderRadius:6, textDecoration:'none', whiteSpace:'nowrap' }}>Open ↗</a>}
+                  style={{ padding:'4px 9px', fontSize:11, background:'#d97706', color:'white', borderRadius:6, textDecoration:'none', whiteSpace:'nowrap' }}>Open ג†—</a>}
               </div>
             </div>
           </div>
@@ -651,19 +655,19 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
                     }} />
                   <div id="ref-err" style={{ display:'none', padding:12, color:'#ef4444', fontSize:12 }}>
                     Image could not load (hotlink protection).<br/>
-                    <a href={refMapUrl} target="_blank" rel="noreferrer" style={{ color:'#6366f1' }}>Open URL in new tab ↗</a>
+                    <a href={refMapUrl} target="_blank" rel="noreferrer" style={{ color:'#6366f1' }}>Open URL in new tab ג†—</a>
                   </div>
                   <a href={refMapUrl} target="_blank" rel="noreferrer"
                     style={{ display:'block', marginTop:6, fontSize:11, color:'#6366f1', textDecoration:'none', padding:'0 4px' }}>
-                    Open full size ↗
+                    Open full size ג†—
                   </a>
                 </div>
               ) : (
                 <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
                   color:'#94a3b8', fontSize:13, padding:24, textAlign:'center' }}>
-                  <div style={{ fontSize:32, marginBottom:12 }}>🗺️</div>
+                  <div style={{ fontSize:32, marginBottom:12 }}>נ—÷ן¸</div>
                   No reference map yet.<br/><br/>
-                  Open <strong>⚙️ City</strong> → Reference<br/>
+                  Open <strong>ג™ן¸ City</strong> ג†’ Reference<br/>
                   and paste a direct image URL.
                 </div>
               )}
@@ -671,7 +675,7 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
           )}
         </div>
 
-        {/* Area editor — fixed right panel */}
+        {/* Area editor ג€” fixed right panel */}
         <div style={{ width:288, flexShrink:0, borderLeft:'1px solid #e2e8f0', background:'white', overflow:'hidden' }}>
           <AreaEditor
             area={selIdx !== null ? areas[selIdx] : null}
@@ -687,7 +691,7 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
   );
 };
 
-// ─── Add City Flow ────────────────────────────────────────────────────────────
+// ג”€ג”€ג”€ Add City Flow ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€
 const AddCityFlow = ({ showToast, onDone }) => {
   const [step, setStep]           = useState('search');
   const [query, setQuery]         = useState('');
@@ -764,7 +768,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
     setSaving(true);
     try {
       const cityId = toId(meta?.cfgNameEn || foundCity.name);
-      const icon = meta?.cfgIcon || cityIcon || '🏙️';
+      const icon = meta?.cfgIcon || cityIcon || 'נ™ן¸';
       await Promise.all([
         db.ref('cities/'+cityId+'/config').set({
           center:{ lat:roundCoord(meta?.lat || foundCity.lat), lng:roundCoord(meta?.lng || foundCity.lng) },
@@ -823,7 +827,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
             <div style={{ marginTop:12 }}>
               <div style={{ fontSize:11, fontWeight:600, color:'#64748b', marginBottom:4 }}>City icon (emoji)</div>
               <input value={cityIcon} onChange={e=>setCityIcon(e.target.value)} maxLength={4}
-                placeholder="🏙️"
+                placeholder="נ™ן¸"
                 style={{ width:60, padding:'6px', border:'1px solid #e2e8f0', borderRadius:8,
                   fontSize:20, textAlign:'center', fontFamily:'inherit' }} />
             </div>
@@ -843,7 +847,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
         )}
         {generating && (
           <div style={{ textAlign:'center', padding:24, color:'#94a3b8', fontSize:13 }}>
-            <div style={{ fontSize:32, marginBottom:8 }}>🗺️</div>
+            <div style={{ fontSize:32, marginBottom:8 }}>נ—÷ן¸</div>
             Fetching areas from OpenStreetMap...
           </div>
         )}
@@ -858,7 +862,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
       selIdx={selIdx} setSelIdx={setSelIdx}
       cityLat={foundCity?.lat} cityLng={foundCity?.lng}
       allCityRadius={allCityRadius}
-      initMeta={{ icon: cityIcon||'🏙️', nameEn: foundCity?.name||'', nameHe: '', dayStartHour:7, nightStartHour:18, distanceMultiplier:1.05, referenceMapUrl: refMapUrl }}
+      initMeta={{ icon: cityIcon||'נ™ן¸', nameEn: foundCity?.name||'', nameHe: '', dayStartHour:7, nightStartHour:18, distanceMultiplier:1.05, referenceMapUrl: refMapUrl }}
       onBack={() => setStep('search')}
       onSave={saveCity} saving={saving}
     />
@@ -866,7 +870,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
   return null;
 };
 
-// ─── City Editor ──────────────────────────────────────────────────────────────
+// ג”€ג”€ג”€ City Editor ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€
 const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
   const [areas, setAreas]         = useState([]);
   const [selIdx, setSelIdx]       = useState(null);
@@ -941,7 +945,7 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
     <button onClick={deleteCity}
       style={{ padding:'6px 12px', fontSize:12, background:'#fef2f2', border:'1px solid #fecaca',
         borderRadius:8, cursor:'pointer', fontWeight:600, color:'#ef4444' }}>
-      🗑️ Delete
+      נ—‘ן¸ Delete
     </button>
   );
 
@@ -953,7 +957,7 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
       cityLat={cityLat} cityLng={cityLng}
       allCityRadius={allCityRadius}
       initMeta={{
-        icon: regEntry.icon || '🏙️',
+        icon: regEntry.icon || 'נ™ן¸',
         nameEn: regEntry.nameEn || '',
         nameHe: regEntry.name || '',
         dayStartHour: config?.dayStartHour ?? 7,
@@ -968,11 +972,19 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
   );
 };
 
-// ─── City List ────────────────────────────────────────────────────────────────
+// ג”€ג”€ג”€ City List ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€
 const CityList = ({ onAddCity, onEditCity }) => {
   const [cities, setCities]   = useState({});
   const [configs, setConfigs] = useState({});
   const [loading, setLoading] = useState(true);
+
+  const toggleActive = (key, city, e) => {
+    e.stopPropagation();
+    const next = !city.active;
+    db.ref('settings/cityRegistry/'+key+'/active').set(next)
+      .then(() => setCities(prev => ({...prev, [key]: {...prev[key], active: next}})))
+      .catch(() => {});
+  };
 
   const reload = () => {
     setLoading(true);
@@ -1017,21 +1029,17 @@ const CityList = ({ onAddCity, onEditCity }) => {
                 transition:'border-color 0.15s' }}
               onMouseEnter={e => e.currentTarget.style.borderColor='#6366f1'}
               onMouseLeave={e => e.currentTarget.style.borderColor='#e2e8f0'}>
-              <span style={{ fontSize:28, flexShrink:0 }}>{city.icon?.startsWith?.('data:') ? '🏙️' : (city.icon||'🏙️')}</span>
+              <span style={{ fontSize:28, flexShrink:0 }}>{city.icon?.startsWith?.('data:') ? 'נ™ן¸' : (city.icon||'נ™ן¸')}</span>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontSize:14, fontWeight:'bold', color:'#1e293b' }}>{city.nameEn}</div>
                 <div style={{ fontSize:12, color:'#94a3b8', marginTop:2 }}>
-                  {city.name} · {city.country}
+                  {city.name} ֲ· {city.country}
                   {configs[city.id] != null
-                    ? <span style={{ marginLeft:8, color:'#64748b' }}>· {configs[city.id]} areas</span>
-                    : <span style={{ marginLeft:8, color:'#f59e0b' }}>· not seeded</span>}
+                    ? <span style={{ marginLeft:8, color:'#64748b' }}>ֲ· {configs[city.id]} areas</span>
+                    : <span style={{ marginLeft:8, color:'#f59e0b' }}>ֲ· not seeded</span>}
                 </div>
               </div>
-              <span style={{ fontSize:11, padding:'2px 8px', borderRadius:20, fontWeight:600, flexShrink:0,
-                background: city.active ? '#dcfce7' : '#f1f5f9',
-                color: city.active ? '#16a34a' : '#64748b' }}>
-                {city.active ? 'Active' : 'Inactive'}
-              </span>
+              <button onClick={e => toggleActive(key, city, e)} title="Toggle active/inactive" style={{ fontSize:11, padding:"3px 10px", borderRadius:20, fontWeight:600, flexShrink:0, border:"none", cursor:"pointer", background: city.active ? "#dcfce7" : "#f1f5f9", color: city.active ? "#16a34a" : "#64748b" }}>{city.active ? "Active" : "Inactive"}</button>
               <span style={{ fontSize:12, color:'#6366f1', fontWeight:600, flexShrink:0 }}>Edit →</span>
             </div>
           ))}
@@ -1041,7 +1049,7 @@ const CityList = ({ onAddCity, onEditCity }) => {
   );
 };
 
-// ─── Main App ─────────────────────────────────────────────────────────────────
+// ג”€ג”€ג”€ Main App ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€
 const FouFouBuild = () => {
   const [authLoading, setAuthLoading] = useState(true);
   const [user, setUser]               = useState(null);
@@ -1070,7 +1078,7 @@ const FouFouBuild = () => {
   if (authLoading) return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100vh',
       flexDirection:'column', gap:12, color:'#64748b' }}>
-      <div style={{ fontSize:48 }}>🏗️</div>
+      <div style={{ fontSize:48 }}>נ—ן¸</div>
       <div style={{ fontWeight:'bold', fontSize:20, color:'#1e293b' }}>FouFou Build</div>
       <div style={{ fontSize:13 }}>Loading...</div>
     </div>
@@ -1079,9 +1087,9 @@ const FouFouBuild = () => {
   if (!user) return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100vh',
       flexDirection:'column', gap:20 }}>
-      <div style={{ fontSize:56 }}>🏗️</div>
+      <div style={{ fontSize:56 }}>נ—ן¸</div>
       <div style={{ fontSize:28, fontWeight:'bold', color:'#1e293b' }}>FouFou Build</div>
-      <div style={{ fontSize:13, color:'#94a3b8' }}>City management · Admin only</div>
+      <div style={{ fontSize:13, color:'#94a3b8' }}>City management ֲ· Admin only</div>
       <button onClick={signIn}
         style={{ marginTop:8, padding:'12px 32px', background:'#2563eb', color:'white', border:'none',
           borderRadius:12, fontSize:14, fontWeight:'bold', cursor:'pointer' }}>
@@ -1093,7 +1101,7 @@ const FouFouBuild = () => {
   if (userRole < 2) return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100vh',
       flexDirection:'column', gap:16 }}>
-      <div style={{ fontSize:48 }}>🔒</div>
+      <div style={{ fontSize:48 }}>נ”’</div>
       <div style={{ fontSize:20, fontWeight:'bold', color:'#1e293b' }}>Admin access required</div>
       <div style={{ fontSize:13, color:'#94a3b8' }}>{user.email}</div>
       <button onClick={signOut} style={{ fontSize:12, color:'#94a3b8', textDecoration:'underline',
@@ -1109,10 +1117,10 @@ const FouFouBuild = () => {
             display:'flex', alignItems:'center', justifyContent:'space-between',
             position:'sticky', top:0, zIndex:10, boxShadow:'0 1px 4px rgba(0,0,0,0.06)' }}>
             <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-              <span style={{ fontSize:22 }}>🏗️</span>
+              <span style={{ fontSize:22 }}>נ—ן¸</span>
               <div>
                 <div style={{ fontWeight:'bold', color:'#1e293b', fontSize:16, lineHeight:1.2 }}>FouFou Build</div>
-                <div style={{ fontSize:11, color:'#94a3b8' }}>City management · v{VERSION}</div>
+                <div style={{ fontSize:11, color:'#94a3b8' }}>City management ֲ· v{VERSION}</div>
               </div>
             </div>
             <div style={{ display:'flex', alignItems:'center', gap:12 }}>
@@ -1148,3 +1156,9 @@ const FouFouBuild = () => {
 };
 
 ReactDOM.createRoot(document.getElementById('root')).render(<FouFouBuild />);
+
+
+
+
+
+
