@@ -17,16 +17,17 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION      = '0.2.6';
+const VERSION      = '0.2.7';
 const GOOGLE_KEY   = 'AIzaSyCE598tSisniM66ApqRvOyOq4svTf6pLHc';
 const PLACES_URL   = 'https://places.googleapis.com/v1/places:searchText';
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
 ];
-// CartoDB Positron -- free, no API key, no domain restriction
-const MAP_TILES    = 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
-const MAP_ATTR     = '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>';
+// MapTiler streets-v2 with English labels -- same key as foufou-dev, allowed on eitanfisher2026.github.io
+const MAPTILER_KEY = 'Uvu44hp7joiCfp72GhTj';
+const MAP_TILES    = 'https://api.maptiler.com/maps/streets-v2/256/{z}/{x}/{y}.png?key=' + MAPTILER_KEY;
+const MAP_ATTR     = '&copy; <a href="https://www.maptiler.com/">MapTiler</a> &copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>';
 const COLORS = ['#4a90d9','#e8a838','#d95555','#3bba7e','#d97eb5','#7c7ce0','#9b7ed9','#2eb8c9','#e08540','#b36dd9','#38b3a0','#c93d5a'];
 
 const HE_WORDS = {
@@ -69,6 +70,26 @@ function isLatinScript(str) {
     if (c > 591 && c !== 160) return false;
   }
   return true;
+}
+
+// Try Wikipedia for a neighbourhood map image for the city.
+// Returns an image URL string or empty string.
+async function fetchWikiRefMap(cityName) {
+  const tries = [
+    'Neighbourhoods_of_' + cityName.replace(/ /g, '_'),
+    cityName.replace(/ /g, '_') + '_neighborhoods',
+    cityName.replace(/ /g, '_') + '_districts',
+  ];
+  for (const title of tries) {
+    try {
+      const r = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(title),
+        { headers: { 'Api-User-Agent': 'FouFou-Build/1.0' } });
+      if (!r.ok) continue;
+      const d = await r.json();
+      if (d.thumbnail?.source) return d.thumbnail.source.replace(/\/\d+px-/, '/800px-');
+    } catch(e) { continue; }
+  }
+  return '';
 }
 
 // Try each Overpass endpoint in order; return parsed JSON or null
@@ -347,15 +368,18 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
   const [dayStartHour,   setDayStartHour]   = useState(initMeta?.dayStartHour ?? 7);
   const [nightStartHour, setNightStartHour] = useState(initMeta?.nightStartHour ?? 18);
   const [distMultiplier, setDistMultiplier] = useState(initMeta?.distanceMultiplier ?? 1.05);
+  const [refMapUrl, setRefMapUrl] = useState(initMeta?.referenceMapUrl || '');
   // UI state
-  const [showCfg, setShowCfg] = useState(false);
-  const [isDirty, setIsDirty] = useState(false);
+  const [showCfg, setShowCfg]   = useState(false);
+  const [showRef, setShowRef]   = useState(false);
+  const [isDirty, setIsDirty]   = useState(false);
 
   const notify = (overrides) => {
     if (onCityConfigChange) onCityConfigChange({
       lat: cityLat, lng: cityLng, radius: allCityRadius,
       icon: cfgIcon, nameEn: cfgNameEn, nameHe: cfgNameHe,
       dayStartHour, nightStartHour, distanceMultiplier: distMultiplier,
+      refMapUrl,
       ...overrides
     });
   };
@@ -414,6 +438,12 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
               style={{ padding:'6px 10px', fontSize:12, border:'1px solid #e2e8f0',
                 borderRadius:8, cursor:'pointer', color:'#475569', background:'#f8fafc' }}>
               Show All
+            </button>
+            <button onClick={() => setShowRef(v => !v)}
+              style={{ padding:'6px 10px', fontSize:12, border:'1px solid #e2e8f0',
+                borderRadius:8, cursor:'pointer', fontWeight:600,
+                background: showRef ? '#fef3c7' : '#f8fafc', color: showRef ? '#d97706' : '#475569' }}>
+              🗺️ Reference
             </button>
             <button onClick={() => setShowCfg(v => !v)}
               style={{ padding:'6px 10px', fontSize:12, border:'1px solid #e2e8f0',
@@ -503,6 +533,18 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
                   style={{ width:60, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
               </div>
             </div>
+            {/* Row 4: Reference map URL */}
+            <div style={{ display:'flex', gap:12, alignItems:'center', flexWrap:'wrap', marginTop:8 }}>
+              <span style={{ fontSize:11, fontWeight:700, color:'#1d4ed8', textTransform:'uppercase', letterSpacing:1, minWidth:72 }}>Reference</span>
+              <div style={{ display:'flex', alignItems:'center', gap:6, flex:1 }}>
+                <span style={{ fontSize:12, color:'#475569', whiteSpace:'nowrap' }}>Map image URL</span>
+                <input value={refMapUrl} onChange={e => { setRefMapUrl(e.target.value); setIsDirty(true); notify({refMapUrl:e.target.value}); }}
+                  placeholder="Paste Wikipedia or any neighbourhood map image URL"
+                  style={{ flex:1, minWidth:200, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
+                {refMapUrl && <a href={refMapUrl} target="_blank" rel="noreferrer"
+                  style={{ padding:'4px 9px', fontSize:11, background:'#d97706', color:'white', borderRadius:6, textDecoration:'none', whiteSpace:'nowrap' }}>Open ↗</a>}
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -545,17 +587,54 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
             allCityRadius={allCityRadius} onSelect={setSelIdx} />
         </div>
 
-        {/* Editor */}
-        <div style={{ width:288, flexShrink:0, borderLeft:'1px solid #e2e8f0',
-          background:'white', overflow:'hidden' }}>
-          <AreaEditor
-            area={selIdx !== null ? areas[selIdx] : null}
-            idx={selIdx} total={areas.length}
-            onChange={updated => updateArea(selIdx, updated)}
-            onDelete={() => deleteArea(selIdx)}
-            onMoveUp={() => moveArea(selIdx, -1)}
-            onMoveDown={() => moveArea(selIdx, 1)}
-          />
+        {/* Right panel: toggles between area editor and reference map */}
+        <div style={{ width:300, flexShrink:0, borderLeft:'1px solid #e2e8f0', background:'white', overflow:'hidden', display:'flex', flexDirection:'column' }}>
+          <div style={{ display:'flex', borderBottom:'1px solid #f1f5f9', flexShrink:0 }}>
+            <button onClick={() => setShowRef(false)}
+              style={{ flex:1, padding:'7px 0', fontSize:12, fontWeight:600, border:'none', cursor:'pointer',
+                background: !showRef ? 'white' : '#f8fafc', color: !showRef ? '#6366f1' : '#94a3b8',
+                borderBottom: !showRef ? '2px solid #6366f1' : '2px solid transparent' }}>
+              Edit Area
+            </button>
+            <button onClick={() => setShowRef(true)}
+              style={{ flex:1, padding:'7px 0', fontSize:12, fontWeight:600, border:'none', cursor:'pointer',
+                background: showRef ? 'white' : '#f8fafc', color: showRef ? '#d97706' : '#94a3b8',
+                borderBottom: showRef ? '2px solid #d97706' : '2px solid transparent' }}>
+              🗺️ Reference
+            </button>
+          </div>
+          <div style={{ flex:1, overflow:'auto' }}>
+            {showRef ? (
+              <div style={{ padding:12 }}>
+                {refMapUrl ? (
+                  <>
+                    <img src={refMapUrl} alt="Reference neighbourhood map"
+                      style={{ width:'100%', borderRadius:8, border:'1px solid #e2e8f0', display:'block' }}
+                      onError={e => { e.target.style.display='none'; e.target.nextSibling.style.display='block'; }} />
+                    <div style={{ display:'none', padding:12, color:'#ef4444', fontSize:12 }}>Image failed to load</div>
+                    <a href={refMapUrl} target="_blank" rel="noreferrer"
+                      style={{ display:'block', marginTop:8, fontSize:11, color:'#6366f1', textDecoration:'none' }}>Open full size ↗</a>
+                    <div style={{ fontSize:11, color:'#94a3b8', marginTop:8 }}>Use this as reference to adjust area circles on the map.</div>
+                  </>
+                ) : (
+                  <div style={{ padding:16, color:'#94a3b8', fontSize:13, textAlign:'center' }}>
+                    <div style={{ fontSize:24, marginBottom:8 }}>🗺️</div>
+                    No reference map set.<br/>
+                    Open ⚙️ City and paste an image URL<br/>in the Reference field.
+                  </div>
+                )}
+              </div>
+            ) : (
+              <AreaEditor
+                area={selIdx !== null ? areas[selIdx] : null}
+                idx={selIdx} total={areas.length}
+                onChange={updated => updateArea(selIdx, updated)}
+                onDelete={() => deleteArea(selIdx)}
+                onMoveUp={() => moveArea(selIdx, -1)}
+                onMoveDown={() => moveArea(selIdx, 1)}
+              />
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -574,6 +653,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
   const [cityIcon, setCityIcon]   = useState('');
   const [saving, setSaving]       = useState(false);
   const [allCityRadius, setAllCityRadius] = useState(15000);
+  const [refMapUrl, setRefMapUrl] = useState('');
 
   const recalcRadius = (lat, lng, areaList) => {
     if (!areaList.length) return 15000;
@@ -626,6 +706,8 @@ const AddCityFlow = ({ showToast, onDone }) => {
       setAreas(builtAreas);
       setAllCityRadius(recalcRadius(lat, lng, builtAreas));
       setSelIdx(null);
+      // Try to find a reference neighbourhood map from Wikipedia (non-blocking)
+      fetchWikiRefMap(foundCity.name).then(url => { if (url) setRefMapUrl(url); });
       setStep('review');
     } catch(e) { showToast('Area generation failed: '+e.message, 'error'); }
     setGenerating(false);
@@ -645,7 +727,8 @@ const AddCityFlow = ({ showToast, onDone }) => {
           dayStartHour: meta?.dayStartHour ?? 7,
           nightStartHour: meta?.nightStartHour ?? 18,
           areas, interestToGooglePlaces:{}, textSearchInterests:{graffiti:'street art'},
-          interestTooltips:{}, systemRoutes:[]
+          interestTooltips:{}, systemRoutes:[],
+          referenceMapUrl: meta?.refMapUrl || refMapUrl || ''
         }),
         db.ref('settings/cityRegistry/'+cityId).set({
           id:cityId,
@@ -729,7 +812,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
       selIdx={selIdx} setSelIdx={setSelIdx}
       cityLat={foundCity?.lat} cityLng={foundCity?.lng}
       allCityRadius={allCityRadius}
-      initMeta={{ icon: cityIcon||'🏙️', nameEn: foundCity?.name||'', nameHe: '', dayStartHour:7, nightStartHour:18, distanceMultiplier:1.05 }}
+      initMeta={{ icon: cityIcon||'🏙️', nameEn: foundCity?.name||'', nameHe: '', dayStartHour:7, nightStartHour:18, distanceMultiplier:1.05, referenceMapUrl: refMapUrl }}
       onBack={() => setStep('search')}
       onSave={saveCity} saving={saving}
     />
@@ -776,6 +859,7 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
           distanceMultiplier: meta?.distMultiplier || config?.distanceMultiplier || 1.05,
           dayStartHour: meta?.dayStartHour ?? config?.dayStartHour ?? 7,
           nightStartHour: meta?.nightStartHour ?? config?.nightStartHour ?? 18,
+          referenceMapUrl: meta?.refMapUrl ?? config?.referenceMapUrl ?? '',
         }),
         db.ref('settings/cityRegistry/'+cityKey).update({
           icon: meta?.cfgIcon || regEntry.icon,
@@ -829,6 +913,7 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
         dayStartHour: config?.dayStartHour ?? 7,
         nightStartHour: config?.nightStartHour ?? 18,
         distanceMultiplier: config?.distanceMultiplier ?? 1.05,
+        referenceMapUrl: config?.referenceMapUrl || '',
       }}
       onBack={onDone}
       onSave={saveCity} saving={saving}
