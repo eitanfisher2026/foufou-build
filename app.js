@@ -23,6 +23,7 @@ const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
 const OSM_TILES    = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
 const COLORS = ['#4a90d9','#e8a838','#d95555','#3bba7e','#d97eb5','#7c7ce0','#9b7ed9','#2eb8c9','#e08540','#b36dd9','#38b3a0','#c93d5a'];
 
+// Hebrew word map -- longer keys must match before shorter ones (see suggestHebrew)
 const HE_WORDS = {
   'old city': 'העיר העתיקה',
   'old town': 'העיר העתיקה',
@@ -30,14 +31,14 @@ const HE_WORDS = {
   'city centre': 'מרכז העיר',
   'downtown': 'מרכז העיר',
   'center': 'מרכז',
-  'north': 'צפון',
-  'south': 'דרום',
-  'east': 'מזרח',
-  'west': 'מערב',
   'northeast': 'צפון מזרח',
   'northwest': 'צפון מערב',
   'southeast': 'דרום מזרח',
   'southwest': 'דרום מערב',
+  'north': 'צפון',
+  'south': 'דרום',
+  'east': 'מזרח',
+  'west': 'מערב',
   'port': 'נמל',
   'harbor': 'נמל',
   'harbour': 'נמל',
@@ -51,10 +52,16 @@ const HE_WORDS = {
   'midtown': 'מידטאון',
 };
 
+// Match by length-descending so "northeast" beats "north"
+// Normalise spaces so "North East" matches "northeast"
 function suggestHebrew(nameEn) {
-  const lower = (nameEn || '').toLowerCase();
-  for (const [key, val] of Object.entries(HE_WORDS)) {
-    if (lower === key || lower.includes(key)) return val;
+  const lower   = (nameEn || '').toLowerCase();
+  const noSpace = lower.replace(/\s+/g, '');
+  const entries = Object.entries(HE_WORDS).sort((a, b) => b[0].length - a[0].length);
+  for (const [key, val] of entries) {
+    const keyNoSpace = key.replace(/\s+/g, '');
+    if (noSpace === keyNoSpace || lower === key) return val;
+    if (noSpace.includes(keyNoSpace) || lower.includes(key)) return val;
   }
   return '';
 }
@@ -74,7 +81,7 @@ function toId(name) {
 
 function roundCoord(v) { return Math.round(v * 10000) / 10000; }
 
-// Returns true if str is written in Latin script (char codes <= 591, allowing accented chars)
+// Returns true only if the string uses Latin-script characters
 // Blocks Greek (880+), Cyrillic (1024+), Hebrew (1424+), Arabic (1536+), CJK (19968+)
 function isLatinScript(str) {
   if (!str) return false;
@@ -87,11 +94,11 @@ function isLatinScript(str) {
 
 function processOverpassAreas(elements, cityLat, cityLng, maxRadius) {
   const seen = new Set();
-  const raw = [];
+  const raw  = [];
 
   for (const el of elements) {
     const tags = el.tags || {};
-    // Try name tags in order: English > international > Latin > other Latin-script languages > local
+    // Prefer English, then international / romanised fallbacks, before local script
     const candidates = [
       tags['name:en'], tags['int_name'], tags['name:latin'],
       tags['name:fr'], tags['name:de'], tags['name:es'], tags['name']
@@ -136,22 +143,22 @@ function processOverpassAreas(elements, cityLat, cityLng, maxRadius) {
 }
 
 function generateCompassAreas(cityLat, cityLng) {
-  const R = 3000;
+  const R    = 3000;
   const dLat = R / 111320;
   const dLng = R / (111320 * Math.cos(cityLat * Math.PI / 180));
-  const make = (id, en, he, lat, lng) => ({
-    id, labelEn: en, label: he, desc: '', descEn: '',
+  const make = (id, en, lat, lng) => ({
+    id, labelEn: en, label: suggestHebrew(en), desc: '', descEn: '',
     lat: roundCoord(lat), lng: roundCoord(lng), radius: 2000, size: 'medium', safety: 'safe'
   });
   return [
-    make('center',    'City Center', suggestHebrew('city center'), cityLat,        cityLng),
-    make('north',     'North',       suggestHebrew('north'),       cityLat+dLat,   cityLng),
-    make('south',     'South',       suggestHebrew('south'),       cityLat-dLat,   cityLng),
-    make('east',      'East',        suggestHebrew('east'),        cityLat,        cityLng+dLng),
-    make('west',      'West',        suggestHebrew('west'),        cityLat,        cityLng-dLng),
-    make('northeast', 'North East',  suggestHebrew('northeast'),   cityLat+dLat,   cityLng+dLng),
-    make('northwest', 'North West',  suggestHebrew('northwest'),   cityLat+dLat,   cityLng-dLng),
-    make('southeast', 'South East',  suggestHebrew('southeast'),   cityLat-dLat,   cityLng+dLng),
+    make('center',    'City Center', cityLat,        cityLng),
+    make('north',     'North',       cityLat+dLat,   cityLng),
+    make('south',     'South',       cityLat-dLat,   cityLng),
+    make('east',      'East',        cityLat,        cityLng+dLng),
+    make('west',      'West',        cityLat,        cityLng-dLng),
+    make('northeast', 'North East',  cityLat+dLat,   cityLng+dLng),
+    make('northwest', 'North West',  cityLat+dLat,   cityLng-dLng),
+    make('southeast', 'South East',  cityLat-dLat,   cityLng+dLng),
   ];
 }
 
@@ -170,60 +177,93 @@ const Toast = ({ msg, type, onDone }) => {
 };
 
 // Leaflet Map
-const AreaMap = ({ areas, selectedIdx, cityLat, cityLng, onSelect }) => {
+// Uses position:absolute inside a relative wrapper so Leaflet always gets a definite pixel size.
+// mapReady state is set after Leaflet initialises; the redraw effect depends on it so it always
+// runs with up-to-date props rather than the stale closure of the init effect.
+const AreaMap = ({ areas, selectedIdx, cityLat, cityLng, allCityRadius, onSelect }) => {
+  const wrapRef   = useRef(null);
   const divRef    = useRef(null);
   const mapRef    = useRef(null);
   const layersRef = useRef([]);
+  const [mapReady, setMapReady] = useState(false);
 
+  // Init Leaflet once
   useEffect(() => {
     window.loadLeaflet().then(() => {
       if (mapRef.current || !divRef.current) return;
       const map = L.map(divRef.current, { zoomControl: true });
       L.tileLayer(OSM_TILES, {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
         maxZoom: 19
       }).addTo(map);
       mapRef.current = map;
-      redraw(map, areas, selectedIdx);
+      // Let the DOM settle before Leaflet measures the container
+      setTimeout(() => { map.invalidateSize(); setMapReady(true); }, 100);
     });
   }, []);
 
+  // Redraw whenever map is ready, areas change, or selection changes
   useEffect(() => {
-    if (mapRef.current) redraw(mapRef.current, areas, selectedIdx);
-  }, [areas, selectedIdx]);
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
 
-  function redraw(map, areas, selIdx) {
+    // Clear old layers
     layersRef.current.forEach(l => { try { map.removeLayer(l); } catch(e) {} });
     layersRef.current = [];
-    if (!areas || !areas.length) return;
 
-    areas.forEach((area, i) => {
-      const color = COLORS[i % COLORS.length];
-      const selected = i === selIdx;
-      const circle = L.circle([area.lat, area.lng], {
-        radius: area.radius, color, fillColor: color,
-        fillOpacity: selected ? 0.35 : 0.12,
-        weight: selected ? 3 : 1.5
+    // City boundary circle
+    if (cityLat && cityLng && allCityRadius) {
+      const bdry = L.circle([cityLat, cityLng], {
+        radius: allCityRadius, color: '#94a3b8', fillColor: '#94a3b8',
+        fillOpacity: 0.04, weight: 2, dashArray: '10,7', interactive: false
       }).addTo(map);
-      circle.on('click', () => onSelect(i));
-
-      const icon = L.divIcon({
-        className: '',
-        html: '<div style="font-size:11px;font-weight:bold;background:rgba(255,255,255,0.92);padding:2px 7px;border-radius:4px;border:2px solid ' + color + ';white-space:nowrap;color:' + color + ';box-shadow:0 1px 3px rgba(0,0,0,0.15)">' + (area.labelEn || '?') + '</div>',
-        iconSize: [140, 22], iconAnchor: [70, 11]
-      });
-      const marker = L.marker([area.lat, area.lng], { icon, interactive: true }).addTo(map);
-      marker.on('click', () => onSelect(i));
-      layersRef.current.push(circle, marker);
-    });
-
-    const circles = layersRef.current.filter(l => l instanceof L.Circle);
-    if (circles.length) {
-      try { map.fitBounds(L.featureGroup(circles).getBounds().pad(0.15)); } catch(e) {}
+      layersRef.current.push(bdry);
     }
-  }
 
-  return <div ref={divRef} style={{ width: '100%', height: '100%' }} />;
+    // Area circles + labels
+    if (areas && areas.length) {
+      areas.forEach((area, i) => {
+        const color    = COLORS[i % COLORS.length];
+        const selected = i === selectedIdx;
+        const circle = L.circle([area.lat, area.lng], {
+          radius: area.radius, color, fillColor: color,
+          fillOpacity: selected ? 0.35 : 0.12,
+          weight: selected ? 3 : 1.5
+        }).addTo(map);
+        circle.on('click', () => onSelect(i));
+
+        const icon = L.divIcon({
+          className: '',
+          html: '<div style="font-size:11px;font-weight:bold;background:rgba(255,255,255,0.92);padding:2px 7px;border-radius:4px;border:2px solid ' + color + ';white-space:nowrap;color:' + color + ';box-shadow:0 1px 3px rgba(0,0,0,0.15)">' + (area.labelEn || '?') + '</div>',
+          iconSize: [140, 22], iconAnchor: [70, 11]
+        });
+        const marker = L.marker([area.lat, area.lng], { icon, interactive: true }).addTo(map);
+        marker.on('click', () => onSelect(i));
+        layersRef.current.push(circle, marker);
+      });
+
+      // Fit to show all areas (only on first draw or when areas change, not just selection)
+      if (selectedIdx === null || selectedIdx === 0) {
+        const circles = layersRef.current.filter(l => l instanceof L.Circle && l.options.radius < 50000);
+        if (circles.length) {
+          try { map.fitBounds(L.featureGroup(circles).getBounds().pad(0.15)); } catch(e) {}
+        }
+      }
+    }
+
+    // Fly to selected area
+    if (selectedIdx !== null && areas && areas[selectedIdx]) {
+      const a = areas[selectedIdx];
+      map.flyTo([a.lat, a.lng], 14, { duration: 0.6 });
+    }
+
+  }, [mapReady, areas, selectedIdx]);
+
+  return (
+    <div ref={wrapRef} style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <div ref={divRef} style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} />
+    </div>
+  );
 };
 
 // Area Editor Panel
@@ -246,12 +286,12 @@ const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown
 
   return (
     <div className="p-4 space-y-3 overflow-y-auto h-full">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-bold text-slate-500 uppercase tracking-wide">Area {idx + 1} of {total}</span>
+      <div className="flex items-center justify-between flex-wrap gap-1">
+        <span className="text-xs font-bold text-slate-500 uppercase tracking-wide">Area {idx + 1} / {total}</span>
         <div className="flex gap-1">
           <button onClick={onMoveUp}   disabled={idx === 0}       className="px-2 py-1 text-xs rounded bg-slate-100 disabled:opacity-30 hover:bg-slate-200">up</button>
           <button onClick={onMoveDown} disabled={idx === total-1} className="px-2 py-1 text-xs rounded bg-slate-100 disabled:opacity-30 hover:bg-slate-200">dn</button>
-          <button onClick={onDelete}   className="px-2 py-1 text-xs rounded bg-red-50 text-red-500 hover:bg-red-100">Delete</button>
+          <button onClick={onDelete} className="px-2 py-1 text-xs rounded bg-red-50 text-red-500 hover:bg-red-100">Delete</button>
         </div>
       </div>
 
@@ -261,7 +301,7 @@ const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown
       <div>
         <label className="block text-xs font-semibold text-slate-500 mb-1">Description (English)</label>
         <textarea value={area.descEn || ''} onChange={e => onChange({ ...area, descEn: e.target.value })}
-          placeholder="Landmarks, highlights, vibe..." rows={2}
+          placeholder="Key landmarks, vibe, what to do..." rows={2}
           className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-400 resize-none"
         />
       </div>
@@ -298,15 +338,16 @@ const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown
 
 // Add City Flow
 const AddCityFlow = ({ showToast, onDone }) => {
-  const [step, setStep]         = useState('search');
-  const [query, setQuery]       = useState('');
+  const [step, setStep]           = useState('search');
+  const [query, setQuery]         = useState('');
   const [searching, setSearching] = useState(false);
   const [foundCity, setFoundCity] = useState(null);
   const [generating, setGenerating] = useState(false);
-  const [areas, setAreas]       = useState([]);
-  const [selIdx, setSelIdx]     = useState(null);
-  const [cityIcon, setCityIcon] = useState('');
-  const [saving, setSaving]     = useState(false);
+  const [areas, setAreas]         = useState([]);
+  const [selIdx, setSelIdx]       = useState(null);
+  const [cityIcon, setCityIcon]   = useState('');
+  const [saving, setSaving]       = useState(false);
+  const [allCityRadius, setAllCityRadius] = useState(0);
 
   const searchCity = async () => {
     if (!query.trim()) return;
@@ -315,15 +356,17 @@ const AddCityFlow = ({ showToast, onDone }) => {
       const resp = await fetch(PLACES_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': GOOGLE_KEY,
-          'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.viewport' },
-        body: JSON.stringify({ textQuery: query + ' city', languageCode: 'en', maxResultCount: 3 })
+          'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.viewport,places.types' },
+        body: JSON.stringify({ textQuery: query, languageCode: 'en', maxResultCount: 5 })
       });
       const data = await resp.json();
-      const p = data.places?.[0];
+      // Prefer actual city/locality results over landmarks
+      const cityTypes = ['locality', 'administrative_area_level_1', 'administrative_area_level_2', 'political'];
+      const p = data.places?.find(pl => pl.types?.some(t => cityTypes.includes(t))) || data.places?.[0];
       if (p?.location) {
         setFoundCity({ name: p.displayName?.text || query, address: p.formattedAddress || '',
           lat: p.location.latitude, lng: p.location.longitude, viewport: p.viewport });
-      } else { showToast('City not found', 'error'); }
+      } else { showToast('City not found — try a different spelling', 'error'); }
     } catch (e) { showToast('Search failed: ' + e.message, 'error'); }
     setSearching(false);
   };
@@ -354,11 +397,11 @@ const AddCityFlow = ({ showToast, onDone }) => {
       let processed = processOverpassAreas(data.elements || [], lat, lng, maxRadius);
 
       if (processed.length < 4) {
-        showToast('Limited OSM data -- using compass areas as base', 'warning');
+        showToast('Limited OSM data -- using compass layout as base', 'warning');
         processed = generateCompassAreas(lat, lng);
       }
 
-      setAreas(processed.map((a, i) => ({
+      const builtAreas = processed.map((a, i) => ({
         id: toId(a.labelEn || ('area_' + i)),
         labelEn: a.labelEn || '',
         label: suggestHebrew(a.labelEn || ''),
@@ -367,14 +410,25 @@ const AddCityFlow = ({ showToast, onDone }) => {
         radius: Math.round((a.radius || 1200) / 100) * 100,
         size: (a.radius || 1200) > 2500 ? 'large' : 'medium',
         safety: 'safe'
-      })));
-      setSelIdx(0);
+      }));
+
+      const acr = Math.round(Math.max(...builtAreas.map(a => distM(lat, lng, a.lat, a.lng) + a.radius)));
+      setAllCityRadius(acr);
+      setAreas(builtAreas);
+      setSelIdx(null);
       setStep('review');
     } catch (e) { showToast('Area generation failed: ' + e.message, 'error'); }
     setGenerating(false);
   };
 
-  const updateArea = (idx, updated) => setAreas(prev => prev.map((a, i) => i === idx ? updated : a));
+  const updateArea = (idx, updated) => {
+    setAreas(prev => {
+      const next = prev.map((a, i) => i === idx ? updated : a);
+      const acr = Math.round(Math.max(...next.map(a => distM(foundCity.lat, foundCity.lng, a.lat, a.lng) + a.radius)));
+      setAllCityRadius(acr);
+      return next;
+    });
+  };
   const deleteArea = (idx) => { setAreas(prev => prev.filter((_, i) => i !== idx)); setSelIdx(null); };
   const moveArea   = (idx, dir) => {
     const next = idx + dir;
@@ -388,7 +442,6 @@ const AddCityFlow = ({ showToast, onDone }) => {
     setSaving(true);
     try {
       const cityId = toId(foundCity.name);
-      const allCityRadius = Math.round(Math.max(...areas.map(a => distM(foundCity.lat, foundCity.lng, a.lat, a.lng) + a.radius)));
       await Promise.all([
         db.ref('cities/' + cityId + '/config').set({
           center: { lat: roundCoord(foundCity.lat), lng: roundCoord(foundCity.lng) },
@@ -408,6 +461,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
     setSaving(false);
   };
 
+  // Search step
   if (step === 'search') return (
     <div className="max-w-lg mx-auto p-6">
       <div className="flex items-center gap-3 mb-6">
@@ -418,7 +472,8 @@ const AddCityFlow = ({ showToast, onDone }) => {
         <div>
           <label className="block text-sm font-semibold text-slate-600 mb-2">City name (English)</label>
           <div className="flex gap-2">
-            <input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === 'Enter' && searchCity()}
+            <input value={query} onChange={e => setQuery(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && searchCity()}
               placeholder="e.g. Barcelona, Tokyo, Amsterdam..."
               className="flex-1 px-4 py-2.5 border-2 border-slate-200 rounded-xl text-sm focus:outline-none focus:border-indigo-400" autoFocus />
             <button onClick={searchCity} disabled={!query.trim() || searching}
@@ -438,14 +493,11 @@ const AddCityFlow = ({ showToast, onDone }) => {
             <div>
               <label className="block text-xs font-semibold text-slate-500 mb-1">City icon (emoji)</label>
               <input value={cityIcon} onChange={e => setCityIcon(e.target.value)} maxLength={4}
-                placeholder="🏙️"
-                className="w-20 px-3 py-1.5 border border-slate-200 rounded-lg text-xl text-center" />
+                placeholder="🏙️" className="w-20 px-3 py-1.5 border border-slate-200 rounded-lg text-xl text-center" />
             </div>
             <div className="flex gap-2 pt-1">
               <button onClick={() => setFoundCity(null)}
-                className="flex-1 py-2 border border-slate-300 rounded-xl text-sm text-slate-600 hover:bg-slate-50">
-                Try again
-              </button>
+                className="flex-1 py-2 border border-slate-300 rounded-xl text-sm text-slate-600 hover:bg-slate-50">Try again</button>
               <button onClick={generateAreas} disabled={generating}
                 className="flex-1 py-2 bg-emerald-500 text-white rounded-xl font-bold text-sm hover:bg-emerald-600 disabled:opacity-50">
                 {generating ? 'Generating...' : 'Correct -- Generate Areas'}
@@ -453,7 +505,6 @@ const AddCityFlow = ({ showToast, onDone }) => {
             </div>
           </div>
         )}
-
         {generating && (
           <div className="text-center py-6 text-slate-400 text-sm">
             <div className="text-3xl mb-2">🗺️</div>
@@ -464,52 +515,83 @@ const AddCityFlow = ({ showToast, onDone }) => {
     </div>
   );
 
+  // Review step — full screen
   if (step === 'review') return (
-    <div className="flex flex-col" style={{ height: '100vh' }}>
-      <div className="bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between flex-shrink-0">
-        <div className="flex items-center gap-3">
-          <button onClick={() => setStep('search')} className="text-slate-400 hover:text-slate-600 text-sm">Back</button>
-          <span className="font-bold text-slate-800">{cityIcon || '🏙️'} {foundCity?.name}</span>
-          <span className="text-slate-400 text-sm">-- {areas.length} areas</span>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
+
+      {/* Header */}
+      <div style={{ background: 'white', borderBottom: '1px solid #e2e8f0', padding: '10px 16px',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button onClick={() => setStep('search')}
+            style={{ color: '#94a3b8', fontSize: 13, background: 'none', border: 'none', cursor: 'pointer' }}>Back</button>
+          <span style={{ fontWeight: 'bold', color: '#1e293b' }}>{cityIcon || '🏙️'} {foundCity?.name}</span>
+          <span style={{ color: '#94a3b8', fontSize: 13 }}>-- {areas.length} areas</span>
         </div>
-        <div className="flex gap-2">
+        <div style={{ display: 'flex', gap: 8 }}>
           <button onClick={() => {
-            const newArea = { id: 'area_' + Date.now(), labelEn: 'New Area', label: '', descEn: '', desc: '',
+            const a = { id: 'area_' + Date.now(), labelEn: 'New Area', label: '', descEn: '', desc: '',
               lat: roundCoord(foundCity.lat), lng: roundCoord(foundCity.lng), radius: 1000, size: 'medium', safety: 'safe' };
-            setAreas(prev => [...prev, newArea]);
+            setAreas(prev => [...prev, a]);
             setSelIdx(areas.length);
-          }} className="px-3 py-1.5 text-xs bg-slate-100 text-slate-600 rounded-lg hover:bg-slate-200 font-semibold">
+          }} style={{ padding: '6px 12px', fontSize: 12, background: '#f1f5f9', border: 'none',
+            borderRadius: 8, cursor: 'pointer', fontWeight: 600, color: '#475569' }}>
             + Add Area
           </button>
           <button onClick={saveCity} disabled={saving || !areas.length}
-            className="px-4 py-1.5 text-sm bg-emerald-500 text-white rounded-lg font-bold hover:bg-emerald-600 disabled:opacity-50">
+            style={{ padding: '6px 16px', fontSize: 13, background: '#10b981', color: 'white',
+              border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', opacity: (saving || !areas.length) ? 0.5 : 1 }}>
             {saving ? 'Saving...' : 'Save City'}
           </button>
         </div>
       </div>
 
-      <div className="flex flex-1 min-h-0">
-        <div className="w-44 flex-shrink-0 border-r border-slate-200 overflow-y-auto bg-slate-50">
+      {/* Body */}
+      <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
+
+        {/* Area list */}
+        <div style={{ width: 176, flexShrink: 0, borderRight: '1px solid #e2e8f0',
+          overflowY: 'auto', background: '#f8fafc' }}>
           {areas.map((area, i) => (
             <div key={i} onClick={() => setSelIdx(i)}
-              className={'px-3 py-2.5 border-b border-slate-100 cursor-pointer hover:bg-white transition-colors' + (selIdx === i ? ' bg-white border-l-4 border-l-indigo-500' : '')}>
-              <div className="flex items-center gap-1.5">
-                <span className="w-5 h-5 rounded-full flex-shrink-0 text-xs flex items-center justify-center font-bold text-white"
-                  style={{ background: COLORS[i % COLORS.length], fontSize: '10px' }}>{i+1}</span>
-                <div className="min-w-0">
-                  <div className="text-xs font-semibold text-slate-800 truncate">{area.labelEn || '(unnamed)'}</div>
-                  {area.label && <div className="text-xs text-slate-400 truncate">{area.label}</div>}
+              style={{ padding: '10px 12px', borderBottom: '1px solid #f1f5f9', cursor: 'pointer',
+                background: selIdx === i ? 'white' : 'transparent',
+                borderLeft: selIdx === i ? '4px solid #6366f1' : '4px solid transparent' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ width: 20, height: 20, borderRadius: '50%', background: COLORS[i % COLORS.length],
+                  color: 'white', fontSize: 10, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontWeight: 'bold', flexShrink: 0 }}>{i+1}</span>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#1e293b',
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {area.labelEn || '(unnamed)'}
+                  </div>
+                  {area.label && (
+                    <div style={{ fontSize: 11, color: '#94a3b8',
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {area.label}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
           ))}
         </div>
 
-        <div className="flex-1 relative">
-          <AreaMap areas={areas} selectedIdx={selIdx} cityLat={foundCity?.lat} cityLng={foundCity?.lng} onSelect={setSelIdx} />
+        {/* Map */}
+        <div style={{ flex: 1, position: 'relative', minWidth: 0 }}>
+          <AreaMap
+            areas={areas}
+            selectedIdx={selIdx}
+            cityLat={foundCity?.lat}
+            cityLng={foundCity?.lng}
+            allCityRadius={allCityRadius}
+            onSelect={setSelIdx}
+          />
         </div>
 
-        <div className="w-72 flex-shrink-0 border-l border-slate-200 bg-white">
+        {/* Editor */}
+        <div style={{ width: 288, flexShrink: 0, borderLeft: '1px solid #e2e8f0', background: 'white', overflowY: 'auto' }}>
           <AreaEditor
             area={selIdx !== null ? areas[selIdx] : null}
             idx={selIdx} total={areas.length}
@@ -554,8 +636,11 @@ const CityList = ({ onAddCity }) => {
   return (
     <div className="max-w-2xl mx-auto p-6">
       <div className="flex items-center justify-between mb-5">
-        <h2 className="text-base font-bold text-slate-700">Cities <span className="text-slate-400 font-normal">({sorted.length})</span></h2>
-        <button onClick={onAddCity} className="px-4 py-2 bg-emerald-500 text-white rounded-lg text-sm font-bold hover:bg-emerald-600 shadow-sm">
+        <h2 className="text-base font-bold text-slate-700">
+          Cities <span className="text-slate-400 font-normal">({sorted.length})</span>
+        </h2>
+        <button onClick={onAddCity}
+          className="px-4 py-2 bg-emerald-500 text-white rounded-lg text-sm font-bold hover:bg-emerald-600 shadow-sm">
           + New City
         </button>
       </div>
@@ -575,7 +660,8 @@ const CityList = ({ onAddCity }) => {
                     : <span className="ml-2 text-amber-500">· not seeded</span>}
                 </div>
               </div>
-              <span className={'text-xs px-2 py-0.5 rounded-full font-semibold flex-shrink-0 ' + (city.active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500')}>
+              <span className={'text-xs px-2 py-0.5 rounded-full font-semibold flex-shrink-0 ' +
+                (city.active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500')}>
                 {city.active ? 'Active' : 'Inactive'}
               </span>
             </div>
@@ -612,10 +698,10 @@ const FouFouBuild = () => {
   const signOut = () => { auth.signOut(); setView('cities'); };
 
   if (authLoading) return (
-    <div className="flex items-center justify-center h-screen flex-col gap-3 text-slate-500">
+    <div className="flex items-center justify-center h-screen flex-col gap-3">
       <div className="text-5xl">🏗️</div>
       <div className="font-bold text-xl text-slate-700">FouFou Build</div>
-      <div className="text-sm">Loading...</div>
+      <div className="text-sm text-slate-400">Loading...</div>
     </div>
   );
 
