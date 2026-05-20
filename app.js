@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION      = '0.2.5';
+const VERSION      = '0.2.6';
 const GOOGLE_KEY   = 'AIzaSyCE598tSisniM66ApqRvOyOq4svTf6pLHc';
 const PLACES_URL   = 'https://places.googleapis.com/v1/places:searchText';
 const OVERPASS_ENDPOINTS = [
@@ -238,14 +238,14 @@ const AreaMap = ({ areas, selectedIdx, cityLat, cityLng, allCityRadius, onSelect
         layersRef.current.push(circle, mk);
       });
 
-      // Fit bounds on first draw
+      // Fit to show all areas whenever nothing is selected
       if (selectedIdx === null) {
         const circles = layersRef.current.filter(l => l instanceof L.Circle);
         try { map.fitBounds(L.featureGroup(circles).getBounds().pad(0.2)); } catch(e) {}
       }
     }
 
-    // Fly to selected area (safe -- map always has center from init)
+    // Fly to selected area
     if (selectedIdx !== null && areas && areas[selectedIdx]) {
       const a = areas[selectedIdx];
       try { map.flyTo([a.lat, a.lng], 14, { duration: 0.5 }); } catch(e) {}
@@ -334,37 +334,60 @@ const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown
 // ─── Shared review layout (used by AddCityFlow and CityEditor) ────────────────
 const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
   cityLat: initLat, cityLng: initLng, allCityRadius: initRadius,
-  onBack, onSave, saving, extraButton, onCityConfigChange }) => {
+  initMeta, onBack, onSave, saving, extraButton, onCityConfigChange }) => {
 
-  const [cityLat, setCityLat]           = useState(initLat);
-  const [cityLng, setCityLng]           = useState(initLng);
-  const [allCityRadius, setAllCityRadius] = useState(initRadius);
-  const [showCfg, setShowCfg]           = useState(false);
+  // Geo config
+  const [cityLat, setCityLat]           = useState(initLat || 30);
+  const [cityLng, setCityLng]           = useState(initLng || 20);
+  const [allCityRadius, setAllCityRadius] = useState(initRadius || 15000);
+  // City metadata
+  const [cfgIcon,        setCfgIcon]        = useState(initMeta?.icon || '🏙️');
+  const [cfgNameEn,      setCfgNameEn]      = useState(initMeta?.nameEn || '');
+  const [cfgNameHe,      setCfgNameHe]      = useState(initMeta?.nameHe || '');
+  const [dayStartHour,   setDayStartHour]   = useState(initMeta?.dayStartHour ?? 7);
+  const [nightStartHour, setNightStartHour] = useState(initMeta?.nightStartHour ?? 18);
+  const [distMultiplier, setDistMultiplier] = useState(initMeta?.distanceMultiplier ?? 1.05);
+  // UI state
+  const [showCfg, setShowCfg] = useState(false);
+  const [isDirty, setIsDirty] = useState(false);
 
-  const updateCfg = (lat, lng, r) => {
-    setCityLat(lat); setCityLng(lng); setAllCityRadius(r);
-    if (onCityConfigChange) onCityConfigChange({ lat, lng, radius: r });
+  const notify = (overrides) => {
+    if (onCityConfigChange) onCityConfigChange({
+      lat: cityLat, lng: cityLng, radius: allCityRadius,
+      icon: cfgIcon, nameEn: cfgNameEn, nameHe: cfgNameHe,
+      dayStartHour, nightStartHour, distanceMultiplier: distMultiplier,
+      ...overrides
+    });
   };
+  const setAndNotify = (setter, key, val) => { setter(val); notify({ [key]: val }); };
+
   const autoRadius = () => {
     if (!areas.length) return;
     const r = Math.round(Math.max(...areas.map(a => distM(cityLat, cityLng, a.lat, a.lng) + a.radius)));
-    setAllCityRadius(r);
-    if (onCityConfigChange) onCityConfigChange({ lat: cityLat, lng: cityLng, radius: r });
+    setAllCityRadius(r); notify({ radius: r });
+    setIsDirty(true);
   };
 
-  const updateArea = (idx, updated) => setAreas(prev => prev.map((a,i) => i===idx ? updated : a));
-  const deleteArea = (idx) => { setAreas(prev => prev.filter((_,i) => i!==idx)); setSelIdx(null); };
+  const handleBack = () => {
+    if (isDirty && !window.confirm('You have unsaved changes.\nLeave without saving?')) return;
+    onBack();
+  };
+
+  const markDirty = (fn) => (...args) => { fn(...args); setIsDirty(true); };
+
+  const updateArea = (idx, updated) => { setAreas(prev => prev.map((a,i) => i===idx ? updated : a)); setIsDirty(true); };
+  const deleteArea = (idx) => { setAreas(prev => prev.filter((_,i) => i!==idx)); setSelIdx(null); setIsDirty(true); };
   const moveArea   = (idx, dir) => {
     const next = idx + dir;
     if (next < 0 || next >= areas.length) return;
     setAreas(prev => { const a=[...prev]; [a[idx],a[next]]=[a[next],a[idx]]; return a; });
-    setSelIdx(next);
+    setSelIdx(next); setIsDirty(true);
   };
   const addArea = () => {
     const a = { id:'area_'+Date.now(), labelEn:'New Area', label:'', descEn:'', desc:'',
       lat: roundCoord(cityLat), lng: roundCoord(cityLng), radius:1000, size:'medium', safety:'safe' };
     setAreas(prev => [...prev, a]);
-    setSelIdx(areas.length);
+    setSelIdx(areas.length); setIsDirty(true);
   };
 
   // Full-screen layout using position:fixed -- guarantees Leaflet gets real pixel dimensions
@@ -374,29 +397,36 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
 
       {/* Header */}
       <div style={{ borderBottom:'1px solid #e2e8f0', background:'white', flexShrink:0 }}>
-        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
-          padding:'10px 16px' }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 16px' }}>
           <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-            <button onClick={onBack}
+            <button onClick={handleBack}
               style={{ color:'#94a3b8', fontSize:13, background:'none', border:'none', cursor:'pointer' }}>
-              Back
+              Back{isDirty ? ' *' : ''}
             </button>
-            <span style={{ fontWeight:'bold', color:'#1e293b', fontSize:15 }}>{title}</span>
+            <span style={{ fontWeight:'bold', color:'#1e293b', fontSize:15 }}>
+              {cfgIcon} {cfgNameEn || title}
+            </span>
             <span style={{ color:'#94a3b8', fontSize:13 }}>-- {areas.length} areas</span>
           </div>
-          <div style={{ display:'flex', gap:8 }}>
+          <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
             {extraButton}
+            <button onClick={() => { setSelIdx(null); }}
+              style={{ padding:'6px 10px', fontSize:12, border:'1px solid #e2e8f0',
+                borderRadius:8, cursor:'pointer', color:'#475569', background:'#f8fafc' }}>
+              Show All
+            </button>
             <button onClick={() => setShowCfg(v => !v)}
-              style={{ padding:'6px 12px', fontSize:12, border:'1px solid #e2e8f0',
+              style={{ padding:'6px 10px', fontSize:12, border:'1px solid #e2e8f0',
                 borderRadius:8, cursor:'pointer', fontWeight:600,
                 background: showCfg ? '#eff6ff' : '#f8fafc', color: showCfg ? '#2563eb' : '#475569' }}>
               ⚙️ City
             </button>
             <button onClick={addArea}
-              style={{ padding:'6px 12px', fontSize:12, background:'#f1f5f9', border:'none',
-                borderRadius:8, cursor:'pointer', fontWeight:600, color:'#475569' }}>+ Add Area</button>
-            <button onClick={onSave} disabled={saving || !areas.length}
-              style={{ padding:'6px 16px', fontSize:13, background:'#10b981', color:'white',
+              style={{ padding:'6px 10px', fontSize:12, background:'#f1f5f9', border:'none',
+                borderRadius:8, cursor:'pointer', fontWeight:600, color:'#475569' }}>+ Area</button>
+            <button onClick={() => { onSave({ cityLat, cityLng, allCityRadius, cfgIcon, cfgNameEn, cfgNameHe, dayStartHour, nightStartHour, distMultiplier }); setIsDirty(false); }}
+              disabled={saving || !areas.length}
+              style={{ padding:'6px 14px', fontSize:13, background:'#10b981', color:'white',
                 border:'none', borderRadius:8, cursor:'pointer', fontWeight:'bold',
                 opacity: (saving||!areas.length) ? 0.5 : 1 }}>
               {saving ? 'Saving...' : 'Save City'}
@@ -404,30 +434,75 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
           </div>
         </div>
 
-        {/* City config panel */}
+        {/* City config panel -- all city-level fields */}
         {showCfg && (
-          <div style={{ padding:'10px 16px', background:'#eff6ff', borderTop:'1px solid #dbeafe',
-            display:'flex', alignItems:'center', gap:16, flexWrap:'wrap' }}>
-            <span style={{ fontSize:11, fontWeight:700, color:'#1d4ed8', textTransform:'uppercase', letterSpacing:1 }}>City Config</span>
-            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-              <span style={{ fontSize:12, color:'#475569' }}>Center Lat</span>
-              <input type="number" step="0.0001" value={cityLat||''} onChange={e => updateCfg(parseFloat(e.target.value)||cityLat, cityLng, allCityRadius)}
-                style={{ width:90, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
+          <div style={{ padding:'12px 16px', background:'#eff6ff', borderTop:'1px solid #dbeafe' }}>
+            {/* Row 1: Identity */}
+            <div style={{ display:'flex', gap:12, alignItems:'center', flexWrap:'wrap', marginBottom:10 }}>
+              <span style={{ fontSize:11, fontWeight:700, color:'#1d4ed8', textTransform:'uppercase', letterSpacing:1, minWidth:72 }}>Identity</span>
+              <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+                <span style={{ fontSize:12, color:'#475569' }}>Icon</span>
+                <input value={cfgIcon} onChange={e => { setCfgIcon(e.target.value); setIsDirty(true); notify({icon:e.target.value}); }}
+                  maxLength={4} style={{ width:44, padding:'3px', border:'1px solid #93c5fd', borderRadius:6, fontSize:22, textAlign:'center', outline:'none' }} />
+              </div>
+              <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+                <span style={{ fontSize:12, color:'#475569' }}>Name EN</span>
+                <input value={cfgNameEn} onChange={e => { setCfgNameEn(e.target.value); setIsDirty(true); notify({nameEn:e.target.value}); }}
+                  style={{ width:110, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
+              </div>
+              <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+                <span style={{ fontSize:12, color:'#475569' }}>Name HE</span>
+                <input value={cfgNameHe} onChange={e => { setCfgNameHe(e.target.value); setIsDirty(true); notify({nameHe:e.target.value}); }}
+                  dir="rtl" style={{ width:110, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
+              </div>
             </div>
-            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-              <span style={{ fontSize:12, color:'#475569' }}>Center Lng</span>
-              <input type="number" step="0.0001" value={cityLng||''} onChange={e => updateCfg(cityLat, parseFloat(e.target.value)||cityLng, allCityRadius)}
-                style={{ width:90, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
+            {/* Row 2: Geography */}
+            <div style={{ display:'flex', gap:12, alignItems:'center', flexWrap:'wrap', marginBottom:10 }}>
+              <span style={{ fontSize:11, fontWeight:700, color:'#1d4ed8', textTransform:'uppercase', letterSpacing:1, minWidth:72 }}>Geography</span>
+              <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+                <span style={{ fontSize:12, color:'#475569' }}>Center Lat</span>
+                <input type="number" step="0.0001" value={cityLat||''}
+                  onChange={e => { const v=parseFloat(e.target.value)||cityLat; setCityLat(v); setIsDirty(true); notify({lat:v}); }}
+                  style={{ width:90, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
+              </div>
+              <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+                <span style={{ fontSize:12, color:'#475569' }}>Lng</span>
+                <input type="number" step="0.0001" value={cityLng||''}
+                  onChange={e => { const v=parseFloat(e.target.value)||cityLng; setCityLng(v); setIsDirty(true); notify({lng:v}); }}
+                  style={{ width:90, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
+              </div>
+              <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+                <span style={{ fontSize:12, color:'#475569' }}>Boundary (m)</span>
+                <input type="number" step="500" value={allCityRadius||''}
+                  onChange={e => { const v=parseInt(e.target.value)||allCityRadius; setAllCityRadius(v); setIsDirty(true); notify({radius:v}); }}
+                  style={{ width:80, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
+                <button onClick={autoRadius}
+                  style={{ padding:'4px 9px', fontSize:11, background:'#2563eb', color:'white',
+                    border:'none', borderRadius:6, cursor:'pointer', fontWeight:600 }}>Auto</button>
+              </div>
             </div>
-            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-              <span style={{ fontSize:12, color:'#475569' }}>Boundary radius (m)</span>
-              <input type="number" step="500" value={allCityRadius||''} onChange={e => updateCfg(cityLat, cityLng, parseInt(e.target.value)||allCityRadius)}
-                style={{ width:80, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
-              <button onClick={autoRadius}
-                style={{ padding:'4px 10px', fontSize:11, background:'#2563eb', color:'white',
-                  border:'none', borderRadius:6, cursor:'pointer', fontWeight:600 }}>Auto</button>
+            {/* Row 3: Behaviour */}
+            <div style={{ display:'flex', gap:12, alignItems:'center', flexWrap:'wrap' }}>
+              <span style={{ fontSize:11, fontWeight:700, color:'#1d4ed8', textTransform:'uppercase', letterSpacing:1, minWidth:72 }}>Behaviour</span>
+              <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+                <span style={{ fontSize:12, color:'#475569' }}>Day starts (h)</span>
+                <input type="number" min={0} max={12} value={dayStartHour}
+                  onChange={e => { const v=parseInt(e.target.value)??7; setDayStartHour(v); setIsDirty(true); notify({dayStartHour:v}); }}
+                  style={{ width:52, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
+              </div>
+              <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+                <span style={{ fontSize:12, color:'#475569' }}>Night starts (h)</span>
+                <input type="number" min={12} max={24} value={nightStartHour}
+                  onChange={e => { const v=parseInt(e.target.value)??18; setNightStartHour(v); setIsDirty(true); notify({nightStartHour:v}); }}
+                  style={{ width:52, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
+              </div>
+              <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+                <span style={{ fontSize:12, color:'#475569' }}>Distance multiplier</span>
+                <input type="number" min={1} max={2} step={0.05} value={distMultiplier}
+                  onChange={e => { const v=parseFloat(e.target.value)||1.05; setDistMultiplier(v); setIsDirty(true); notify({distanceMultiplier:v}); }}
+                  style={{ width:60, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
+              </div>
             </div>
-            <span style={{ fontSize:11, color:'#93c5fd' }}>Auto = outermost area edge from center</span>
           </div>
         )}
       </div>
@@ -556,25 +631,31 @@ const AddCityFlow = ({ showToast, onDone }) => {
     setGenerating(false);
   };
 
-  const saveCity = async () => {
+  const saveCity = async (meta) => {
     if (!foundCity || !areas.length) return;
     setSaving(true);
     try {
-      const cityId = toId(foundCity.name);
+      const cityId = toId(meta?.cfgNameEn || foundCity.name);
+      const icon = meta?.cfgIcon || cityIcon || '🏙️';
       await Promise.all([
         db.ref('cities/'+cityId+'/config').set({
-          center:{ lat:roundCoord(foundCity.lat), lng:roundCoord(foundCity.lng) },
-          allCityRadius, distanceMultiplier:1.05, dayStartHour:7, nightStartHour:18,
+          center:{ lat:roundCoord(meta?.lat || foundCity.lat), lng:roundCoord(meta?.lng || foundCity.lng) },
+          allCityRadius: meta?.radius || allCityRadius,
+          distanceMultiplier: meta?.distMultiplier || 1.05,
+          dayStartHour: meta?.dayStartHour ?? 7,
+          nightStartHour: meta?.nightStartHour ?? 18,
           areas, interestToGooglePlaces:{}, textSearchInterests:{graffiti:'street art'},
           interestTooltips:{}, systemRoutes:[]
         }),
         db.ref('settings/cityRegistry/'+cityId).set({
-          id:cityId, name:foundCity.name, nameEn:foundCity.name,
+          id:cityId,
+          name: meta?.cfgNameHe || foundCity.name,
+          nameEn: meta?.cfgNameEn || foundCity.name,
           country:(foundCity.address.split(',').pop()||'').trim(),
-          icon:cityIcon||'🏙️', active:false, order:99
+          icon, active:false, order:99
         })
       ]);
-      showToast(foundCity.name+' saved (inactive)', 'success');
+      showToast((meta?.cfgNameEn || foundCity.name)+' saved (inactive)', 'success');
       onDone();
     } catch(e) { showToast('Save failed: '+e.message, 'error'); }
     setSaving(false);
@@ -643,14 +724,14 @@ const AddCityFlow = ({ showToast, onDone }) => {
 
   if (step === 'review') return (
     <ReviewLayout
-      title={(cityIcon||'🏙️') + ' ' + (foundCity?.name||'')}
+      title={foundCity?.name || ''}
       areas={areas} setAreas={a => { setAreas(a); setAllCityRadius(recalcRadius(foundCity.lat, foundCity.lng, a)); }}
       selIdx={selIdx} setSelIdx={setSelIdx}
       cityLat={foundCity?.lat} cityLng={foundCity?.lng}
       allCityRadius={allCityRadius}
+      initMeta={{ icon: cityIcon||'🏙️', nameEn: foundCity?.name||'', nameHe: '', dayStartHour:7, nightStartHour:18, distanceMultiplier:1.05 }}
       onBack={() => setStep('search')}
       onSave={saveCity} saving={saving}
-      onCityConfigChange={cfg => { setAllCityRadius(cfg.radius); }}
     />
   );
   return null;
@@ -679,19 +760,29 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
     }).finally(() => setLoading(false));
   }, []);
 
-  const cityLat = cityConfig?.lat || config?.center?.lat || 30;
-  const cityLng = cityConfig?.lng || config?.center?.lng || 20;
-  const allCityRadius = cityConfig?.radius || config?.allCityRadius || 15000;
+  const cityLat = config?.center?.lat || 30;
+  const cityLng = config?.center?.lng || 20;
+  const allCityRadius = config?.allCityRadius || 15000;
 
-  const saveCity = async () => {
+  const saveCity = async (meta) => {
     if (!areas.length) return;
     setSaving(true);
     try {
-      await db.ref('cities/'+regEntry.id+'/config').update({
-        areas,
-        allCityRadius,
-        center: { lat: roundCoord(cityLat), lng: roundCoord(cityLng) }
-      });
+      await Promise.all([
+        db.ref('cities/'+regEntry.id+'/config').update({
+          areas,
+          allCityRadius: meta?.radius || allCityRadius,
+          center: { lat: roundCoord(meta?.lat || cityLat), lng: roundCoord(meta?.lng || cityLng) },
+          distanceMultiplier: meta?.distMultiplier || config?.distanceMultiplier || 1.05,
+          dayStartHour: meta?.dayStartHour ?? config?.dayStartHour ?? 7,
+          nightStartHour: meta?.nightStartHour ?? config?.nightStartHour ?? 18,
+        }),
+        db.ref('settings/cityRegistry/'+cityKey).update({
+          icon: meta?.cfgIcon || regEntry.icon,
+          name: meta?.cfgNameHe || regEntry.name,
+          nameEn: meta?.cfgNameEn || regEntry.nameEn,
+        })
+      ]);
       showToast(regEntry.nameEn+' saved', 'success');
       onDone();
     } catch(e) { showToast('Save failed: '+e.message, 'error'); }
@@ -726,15 +817,22 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
 
   return (
     <ReviewLayout
-      title={(regEntry.icon||'🏙️') + ' ' + regEntry.nameEn}
+      title={regEntry.nameEn}
       areas={areas} setAreas={setAreas}
       selIdx={selIdx} setSelIdx={setSelIdx}
       cityLat={cityLat} cityLng={cityLng}
       allCityRadius={allCityRadius}
+      initMeta={{
+        icon: regEntry.icon || '🏙️',
+        nameEn: regEntry.nameEn || '',
+        nameHe: regEntry.name || '',
+        dayStartHour: config?.dayStartHour ?? 7,
+        nightStartHour: config?.nightStartHour ?? 18,
+        distanceMultiplier: config?.distanceMultiplier ?? 1.05,
+      }}
       onBack={onDone}
       onSave={saveCity} saving={saving}
       extraButton={deleteBtn}
-      onCityConfigChange={setCityConfig}
     />
   );
 };
