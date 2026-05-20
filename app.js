@@ -17,16 +17,16 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION      = '0.2.7';
+const VERSION      = '0.2.8';
 const GOOGLE_KEY   = 'AIzaSyCE598tSisniM66ApqRvOyOq4svTf6pLHc';
 const PLACES_URL   = 'https://places.googleapis.com/v1/places:searchText';
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
 ];
-// MapTiler streets-v2 with English labels -- same key as foufou-dev, allowed on eitanfisher2026.github.io
+// MapTiler streets-v2-en: forces English labels globally (streets-v2 uses local language)
 const MAPTILER_KEY = 'Uvu44hp7joiCfp72GhTj';
-const MAP_TILES    = 'https://api.maptiler.com/maps/streets-v2/256/{z}/{x}/{y}.png?key=' + MAPTILER_KEY;
+const MAP_TILES    = 'https://api.maptiler.com/maps/streets-v2-en/256/{z}/{x}/{y}.png?key=' + MAPTILER_KEY;
 const MAP_ATTR     = '&copy; <a href="https://www.maptiler.com/">MapTiler</a> &copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>';
 const COLORS = ['#4a90d9','#e8a838','#d95555','#3bba7e','#d97eb5','#7c7ce0','#9b7ed9','#2eb8c9','#e08540','#b36dd9','#38b3a0','#c93d5a'];
 
@@ -72,21 +72,34 @@ function isLatinScript(str) {
   return true;
 }
 
-// Try Wikipedia for a neighbourhood map image for the city.
-// Returns an image URL string or empty string.
+// Search Wikipedia for a neighbourhood/district map image for the city.
+// Returns a direct image URL or empty string.
 async function fetchWikiRefMap(cityName) {
-  const tries = [
-    'Neighbourhoods_of_' + cityName.replace(/ /g, '_'),
-    cityName.replace(/ /g, '_') + '_neighborhoods',
-    cityName.replace(/ /g, '_') + '_districts',
+  const queries = [
+    cityName + ' neighbourhoods',
+    cityName + ' neighborhoods map',
+    cityName + ' districts',
   ];
-  for (const title of tries) {
+  for (const q of queries) {
     try {
-      const r = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(title),
-        { headers: { 'Api-User-Agent': 'FouFou-Build/1.0' } });
-      if (!r.ok) continue;
-      const d = await r.json();
-      if (d.thumbnail?.source) return d.thumbnail.source.replace(/\/\d+px-/, '/800px-');
+      // Step 1: search Wikipedia for the article
+      const searchUrl = 'https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch='
+        + encodeURIComponent(q) + '&format=json&origin=*&srlimit=3';
+      const sr = await fetch(searchUrl);
+      if (!sr.ok) continue;
+      const sd = await sr.json();
+      const title = sd.query?.search?.[0]?.title;
+      if (!title) continue;
+      // Step 2: get the main image of that article
+      const imgUrl = 'https://en.wikipedia.org/w/api.php?action=query&titles='
+        + encodeURIComponent(title)
+        + '&prop=pageimages&piprop=original|thumbnail&pithumbsize=900&format=json&origin=*';
+      const ir = await fetch(imgUrl);
+      if (!ir.ok) continue;
+      const id = await ir.json();
+      const page = Object.values(id.query?.pages || {})[0];
+      const src = page?.original?.source || page?.thumbnail?.source;
+      if (src) return src;
     } catch(e) { continue; }
   }
   return '';
@@ -372,7 +385,30 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
   // UI state
   const [showCfg, setShowCfg]   = useState(false);
   const [showRef, setShowRef]   = useState(false);
+  const [splitPct, setSplitPct] = useState(60); // % width for map when ref is visible
   const [isDirty, setIsDirty]   = useState(false);
+  const bodyRef    = useRef(null);
+  const draggingRef = useRef(false);
+
+  useEffect(() => {
+    const onMove = (e) => {
+      if (!draggingRef.current || !bodyRef.current) return;
+      const rect = bodyRef.current.getBoundingClientRect();
+      const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+      setSplitPct(Math.max(25, Math.min(80, (x / rect.width) * 100)));
+    };
+    const onUp = () => { draggingRef.current = false; };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    window.addEventListener('touchmove', onMove);
+    window.addEventListener('touchend', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend', onUp);
+    };
+  }, []);
 
   const notify = (overrides) => {
     if (onCityConfigChange) onCityConfigChange({
@@ -581,60 +617,70 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
           ))}
         </div>
 
-        {/* Map -- takes remaining space, AreaMap fills it via height:100% */}
-        <div style={{ flex:1, position:'relative', overflow:'hidden' }}>
-          <AreaMap areas={areas} selectedIdx={selIdx} cityLat={cityLat} cityLng={cityLng}
-            allCityRadius={allCityRadius} onSelect={setSelIdx} />
+        {/* Centre: map + optional reference side-by-side with draggable divider */}
+        <div ref={bodyRef} style={{ flex:1, display:'flex', overflow:'hidden', position:'relative' }}>
+
+          {/* Leaflet map */}
+          <div style={{ width: showRef ? splitPct+'%' : '100%', position:'relative', overflow:'hidden', transition: draggingRef.current ? 'none' : 'width 0.15s' }}>
+            <AreaMap areas={areas} selectedIdx={selIdx} cityLat={cityLat} cityLng={cityLng}
+              allCityRadius={allCityRadius} onSelect={setSelIdx} />
+          </div>
+
+          {/* Draggable divider */}
+          {showRef && (
+            <div
+              onMouseDown={e => { draggingRef.current = true; e.preventDefault(); }}
+              onTouchStart={e => { draggingRef.current = true; }}
+              style={{ width:6, flexShrink:0, background:'#e2e8f0', cursor:'col-resize',
+                display:'flex', alignItems:'center', justifyContent:'center',
+                userSelect:'none', zIndex:10 }}>
+              <div style={{ width:2, height:40, background:'#94a3b8', borderRadius:2 }} />
+            </div>
+          )}
+
+          {/* Reference image panel */}
+          {showRef && (
+            <div style={{ flex:1, overflow:'auto', background:'#fafafa', display:'flex', flexDirection:'column' }}>
+              {refMapUrl ? (
+                <div style={{ padding:8 }}>
+                  <img src={refMapUrl} alt="Reference neighbourhood map"
+                    style={{ width:'100%', display:'block', borderRadius:6, border:'1px solid #e2e8f0' }}
+                    onError={e => {
+                      e.target.style.display = 'none';
+                      document.getElementById('ref-err').style.display = 'block';
+                    }} />
+                  <div id="ref-err" style={{ display:'none', padding:12, color:'#ef4444', fontSize:12 }}>
+                    Image could not load (hotlink protection).<br/>
+                    <a href={refMapUrl} target="_blank" rel="noreferrer" style={{ color:'#6366f1' }}>Open URL in new tab ↗</a>
+                  </div>
+                  <a href={refMapUrl} target="_blank" rel="noreferrer"
+                    style={{ display:'block', marginTop:6, fontSize:11, color:'#6366f1', textDecoration:'none', padding:'0 4px' }}>
+                    Open full size ↗
+                  </a>
+                </div>
+              ) : (
+                <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
+                  color:'#94a3b8', fontSize:13, padding:24, textAlign:'center' }}>
+                  <div style={{ fontSize:32, marginBottom:12 }}>🗺️</div>
+                  No reference map yet.<br/><br/>
+                  Open <strong>⚙️ City</strong> → Reference<br/>
+                  and paste a direct image URL.
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
-        {/* Right panel: toggles between area editor and reference map */}
-        <div style={{ width:300, flexShrink:0, borderLeft:'1px solid #e2e8f0', background:'white', overflow:'hidden', display:'flex', flexDirection:'column' }}>
-          <div style={{ display:'flex', borderBottom:'1px solid #f1f5f9', flexShrink:0 }}>
-            <button onClick={() => setShowRef(false)}
-              style={{ flex:1, padding:'7px 0', fontSize:12, fontWeight:600, border:'none', cursor:'pointer',
-                background: !showRef ? 'white' : '#f8fafc', color: !showRef ? '#6366f1' : '#94a3b8',
-                borderBottom: !showRef ? '2px solid #6366f1' : '2px solid transparent' }}>
-              Edit Area
-            </button>
-            <button onClick={() => setShowRef(true)}
-              style={{ flex:1, padding:'7px 0', fontSize:12, fontWeight:600, border:'none', cursor:'pointer',
-                background: showRef ? 'white' : '#f8fafc', color: showRef ? '#d97706' : '#94a3b8',
-                borderBottom: showRef ? '2px solid #d97706' : '2px solid transparent' }}>
-              🗺️ Reference
-            </button>
-          </div>
-          <div style={{ flex:1, overflow:'auto' }}>
-            {showRef ? (
-              <div style={{ padding:12 }}>
-                {refMapUrl ? (
-                  <>
-                    <img src={refMapUrl} alt="Reference neighbourhood map"
-                      style={{ width:'100%', borderRadius:8, border:'1px solid #e2e8f0', display:'block' }}
-                      onError={e => { e.target.style.display='none'; e.target.nextSibling.style.display='block'; }} />
-                    <div style={{ display:'none', padding:12, color:'#ef4444', fontSize:12 }}>Image failed to load</div>
-                    <a href={refMapUrl} target="_blank" rel="noreferrer"
-                      style={{ display:'block', marginTop:8, fontSize:11, color:'#6366f1', textDecoration:'none' }}>Open full size ↗</a>
-                    <div style={{ fontSize:11, color:'#94a3b8', marginTop:8 }}>Use this as reference to adjust area circles on the map.</div>
-                  </>
-                ) : (
-                  <div style={{ padding:16, color:'#94a3b8', fontSize:13, textAlign:'center' }}>
-                    <div style={{ fontSize:24, marginBottom:8 }}>🗺️</div>
-                    No reference map set.<br/>
-                    Open ⚙️ City and paste an image URL<br/>in the Reference field.
-                  </div>
-                )}
-              </div>
-            ) : (
-              <AreaEditor
-                area={selIdx !== null ? areas[selIdx] : null}
-                idx={selIdx} total={areas.length}
-                onChange={updated => updateArea(selIdx, updated)}
-                onDelete={() => deleteArea(selIdx)}
-                onMoveUp={() => moveArea(selIdx, -1)}
-                onMoveDown={() => moveArea(selIdx, 1)}
-              />
-            )}
-          </div>
+        {/* Area editor — fixed right panel */}
+        <div style={{ width:288, flexShrink:0, borderLeft:'1px solid #e2e8f0', background:'white', overflow:'hidden' }}>
+          <AreaEditor
+            area={selIdx !== null ? areas[selIdx] : null}
+            idx={selIdx} total={areas.length}
+            onChange={updated => updateArea(selIdx, updated)}
+            onDelete={() => deleteArea(selIdx)}
+            onMoveUp={() => moveArea(selIdx, -1)}
+            onMoveDown={() => moveArea(selIdx, 1)}
+          />
         </div>
       </div>
     </div>
