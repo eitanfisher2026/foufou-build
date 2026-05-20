@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FouFou Build</title>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #f8fafc; }
+    #root { min-height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;gap:12px;color:#64748b">
+      <div style="font-size:40px">🏗️</div>
+      <div style="font-weight:bold;font-size:20px;color:#1e293b">FouFou Build</div>
+      <div style="font-size:13px">Loading...</div>
+    </div>
+  </div>
+
+  <!-- React 18 (same version as foufou-dev) -->
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.development.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.development.js"></script>
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Babel standalone — JSX in browser, fine for an admin tool -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Firebase 9.22.0 compat (same version as foufou-dev) -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+
+  <!-- Leaflet (loaded on demand by the map editor) -->
+  <script>
+  window.loadLeaflet = function() {
+    if (window._leafletReady) return window._leafletReady;
+    if (typeof L !== 'undefined') return Promise.resolve(true);
+    window._leafletReady = new Promise(function(resolve) {
+      var css = document.createElement('link');
+      css.rel = 'stylesheet';
+      css.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+      document.head.appendChild(css);
+      var js = document.createElement('script');
+      js.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+      js.onload = function() { resolve(true); };
+      js.onerror = function() { resolve(false); };
+      document.head.appendChild(js);
+    });
+    return window._leafletReady;
+  };
+  </script>
+
+  <!-- App -->
+  <script type="text/babel" src="app.js"></script>
+</body>
+</html>
