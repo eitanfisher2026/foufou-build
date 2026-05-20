@@ -17,10 +17,13 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION      = '0.2.4';
+const VERSION      = '0.2.5';
 const GOOGLE_KEY   = 'AIzaSyCE598tSisniM66ApqRvOyOq4svTf6pLHc';
 const PLACES_URL   = 'https://places.googleapis.com/v1/places:searchText';
-const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
+const OVERPASS_ENDPOINTS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+];
 // CartoDB Positron -- free, no API key, no domain restriction
 const MAP_TILES    = 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
 const MAP_ATTR     = '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>';
@@ -66,6 +69,25 @@ function isLatinScript(str) {
     if (c > 591 && c !== 160) return false;
   }
   return true;
+}
+
+// Try each Overpass endpoint in order; return parsed JSON or null
+async function fetchOverpass(query) {
+  for (const endpoint of OVERPASS_ENDPOINTS) {
+    try {
+      const resp = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'data=' + encodeURIComponent(query),
+        signal: AbortSignal.timeout(20000)
+      });
+      if (!resp.ok) continue;
+      const text = await resp.text();
+      if (text.trimStart().startsWith('<')) continue; // XML error / HTML page
+      return JSON.parse(text);
+    } catch(e) { continue; }
+  }
+  return null;
 }
 
 function processOverpassAreas(elements, cityLat, cityLng, maxRadius) {
@@ -310,8 +332,25 @@ const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown
 };
 
 // ─── Shared review layout (used by AddCityFlow and CityEditor) ────────────────
-const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx, cityLat, cityLng, allCityRadius,
-  onBack, onSave, saving, extraButton }) => {
+const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
+  cityLat: initLat, cityLng: initLng, allCityRadius: initRadius,
+  onBack, onSave, saving, extraButton, onCityConfigChange }) => {
+
+  const [cityLat, setCityLat]           = useState(initLat);
+  const [cityLng, setCityLng]           = useState(initLng);
+  const [allCityRadius, setAllCityRadius] = useState(initRadius);
+  const [showCfg, setShowCfg]           = useState(false);
+
+  const updateCfg = (lat, lng, r) => {
+    setCityLat(lat); setCityLng(lng); setAllCityRadius(r);
+    if (onCityConfigChange) onCityConfigChange({ lat, lng, radius: r });
+  };
+  const autoRadius = () => {
+    if (!areas.length) return;
+    const r = Math.round(Math.max(...areas.map(a => distM(cityLat, cityLng, a.lat, a.lng) + a.radius)));
+    setAllCityRadius(r);
+    if (onCityConfigChange) onCityConfigChange({ lat: cityLat, lng: cityLng, radius: r });
+  };
 
   const updateArea = (idx, updated) => setAreas(prev => prev.map((a,i) => i===idx ? updated : a));
   const deleteArea = (idx) => { setAreas(prev => prev.filter((_,i) => i!==idx)); setSelIdx(null); };
@@ -334,28 +373,63 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx, cityLat, city
       flexDirection:'column', zIndex:100, background:'white' }}>
 
       {/* Header */}
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
-        padding:'10px 16px', borderBottom:'1px solid #e2e8f0', background:'white', flexShrink:0 }}>
-        <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-          <button onClick={onBack}
-            style={{ color:'#94a3b8', fontSize:13, background:'none', border:'none', cursor:'pointer' }}>
-            Back
-          </button>
-          <span style={{ fontWeight:'bold', color:'#1e293b', fontSize:15 }}>{title}</span>
-          <span style={{ color:'#94a3b8', fontSize:13 }}>-- {areas.length} areas</span>
+      <div style={{ borderBottom:'1px solid #e2e8f0', background:'white', flexShrink:0 }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+          padding:'10px 16px' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+            <button onClick={onBack}
+              style={{ color:'#94a3b8', fontSize:13, background:'none', border:'none', cursor:'pointer' }}>
+              Back
+            </button>
+            <span style={{ fontWeight:'bold', color:'#1e293b', fontSize:15 }}>{title}</span>
+            <span style={{ color:'#94a3b8', fontSize:13 }}>-- {areas.length} areas</span>
+          </div>
+          <div style={{ display:'flex', gap:8 }}>
+            {extraButton}
+            <button onClick={() => setShowCfg(v => !v)}
+              style={{ padding:'6px 12px', fontSize:12, border:'1px solid #e2e8f0',
+                borderRadius:8, cursor:'pointer', fontWeight:600,
+                background: showCfg ? '#eff6ff' : '#f8fafc', color: showCfg ? '#2563eb' : '#475569' }}>
+              ⚙️ City
+            </button>
+            <button onClick={addArea}
+              style={{ padding:'6px 12px', fontSize:12, background:'#f1f5f9', border:'none',
+                borderRadius:8, cursor:'pointer', fontWeight:600, color:'#475569' }}>+ Add Area</button>
+            <button onClick={onSave} disabled={saving || !areas.length}
+              style={{ padding:'6px 16px', fontSize:13, background:'#10b981', color:'white',
+                border:'none', borderRadius:8, cursor:'pointer', fontWeight:'bold',
+                opacity: (saving||!areas.length) ? 0.5 : 1 }}>
+              {saving ? 'Saving...' : 'Save City'}
+            </button>
+          </div>
         </div>
-        <div style={{ display:'flex', gap:8 }}>
-          {extraButton}
-          <button onClick={addArea}
-            style={{ padding:'6px 12px', fontSize:12, background:'#f1f5f9', border:'none',
-              borderRadius:8, cursor:'pointer', fontWeight:600, color:'#475569' }}>+ Add Area</button>
-          <button onClick={onSave} disabled={saving || !areas.length}
-            style={{ padding:'6px 16px', fontSize:13, background:'#10b981', color:'white',
-              border:'none', borderRadius:8, cursor:'pointer', fontWeight:'bold',
-              opacity: (saving||!areas.length) ? 0.5 : 1 }}>
-            {saving ? 'Saving...' : 'Save City'}
-          </button>
-        </div>
+
+        {/* City config panel */}
+        {showCfg && (
+          <div style={{ padding:'10px 16px', background:'#eff6ff', borderTop:'1px solid #dbeafe',
+            display:'flex', alignItems:'center', gap:16, flexWrap:'wrap' }}>
+            <span style={{ fontSize:11, fontWeight:700, color:'#1d4ed8', textTransform:'uppercase', letterSpacing:1 }}>City Config</span>
+            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+              <span style={{ fontSize:12, color:'#475569' }}>Center Lat</span>
+              <input type="number" step="0.0001" value={cityLat||''} onChange={e => updateCfg(parseFloat(e.target.value)||cityLat, cityLng, allCityRadius)}
+                style={{ width:90, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
+            </div>
+            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+              <span style={{ fontSize:12, color:'#475569' }}>Center Lng</span>
+              <input type="number" step="0.0001" value={cityLng||''} onChange={e => updateCfg(cityLat, parseFloat(e.target.value)||cityLng, allCityRadius)}
+                style={{ width:90, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
+            </div>
+            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+              <span style={{ fontSize:12, color:'#475569' }}>Boundary radius (m)</span>
+              <input type="number" step="500" value={allCityRadius||''} onChange={e => updateCfg(cityLat, cityLng, parseInt(e.target.value)||allCityRadius)}
+                style={{ width:80, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
+              <button onClick={autoRadius}
+                style={{ padding:'4px 10px', fontSize:11, background:'#2563eb', color:'white',
+                  border:'none', borderRadius:6, cursor:'pointer', fontWeight:600 }}>Auto</button>
+            </div>
+            <span style={{ fontSize:11, color:'#93c5fd' }}>Auto = outermost area edge from center</span>
+          </div>
+        )}
       </div>
 
       {/* Body */}
@@ -467,14 +541,10 @@ const AddCityFlow = ({ showToast, onDone }) => {
       ');\nout center tags bb;';
 
     try {
-      const resp = await fetch(OVERPASS_URL, {
-        method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
-        body:'data='+encodeURIComponent(q)
-      });
-      const data = await resp.json();
-      let processed = processOverpassAreas(data.elements||[], lat, lng, maxR);
+      const data = await fetchOverpass(q);
+      let processed = data ? processOverpassAreas(data.elements||[], lat, lng, maxR) : [];
       if (processed.length < 4) {
-        showToast('Limited OSM data -- using compass layout as base', 'warning');
+        showToast(data ? 'Limited OSM data -- using compass layout' : 'OSM unavailable -- using compass layout', 'warning');
         processed = generateCompassAreas(lat, lng);
       }
       const builtAreas = processed.map(buildArea);
@@ -580,6 +650,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
       allCityRadius={allCityRadius}
       onBack={() => setStep('search')}
       onSave={saveCity} saving={saving}
+      onCityConfigChange={cfg => { setAllCityRadius(cfg.radius); }}
     />
   );
   return null;
@@ -587,17 +658,19 @@ const AddCityFlow = ({ showToast, onDone }) => {
 
 // ─── City Editor ──────────────────────────────────────────────────────────────
 const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
-  const [areas, setAreas]       = useState([]);
-  const [selIdx, setSelIdx]     = useState(null);
-  const [config, setConfig]     = useState(null);
-  const [saving, setSaving]     = useState(false);
-  const [loading, setLoading]   = useState(true);
+  const [areas, setAreas]         = useState([]);
+  const [selIdx, setSelIdx]       = useState(null);
+  const [config, setConfig]       = useState(null);
+  const [cityConfig, setCityConfig] = useState(null); // center + radius overrides from config panel
+  const [saving, setSaving]       = useState(false);
+  const [loading, setLoading]     = useState(true);
 
   useEffect(() => {
     db.ref('cities/'+regEntry.id+'/config').once('value').then(snap => {
       const cfg = snap.val();
       if (cfg) {
         setConfig(cfg);
+        setCityConfig({ lat: cfg.center?.lat, lng: cfg.center?.lng, radius: cfg.allCityRadius });
         const raw = cfg.areas
           ? (Array.isArray(cfg.areas) ? cfg.areas : Object.values(cfg.areas))
           : [];
@@ -606,26 +679,49 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
     }).finally(() => setLoading(false));
   }, []);
 
-  const allCityRadius = config?.allCityRadius || 15000;
-  const cityLat = config?.center?.lat || regEntry.lat || 30;
-  const cityLng = config?.center?.lng || regEntry.lng || 20;
+  const cityLat = cityConfig?.lat || config?.center?.lat || 30;
+  const cityLng = cityConfig?.lng || config?.center?.lng || 20;
+  const allCityRadius = cityConfig?.radius || config?.allCityRadius || 15000;
 
   const saveCity = async () => {
     if (!areas.length) return;
     setSaving(true);
     try {
-      const acr = Math.round(Math.max(...areas.map(a => distM(cityLat,cityLng,a.lat,a.lng)+a.radius)));
-      await db.ref('cities/'+regEntry.id+'/config').update({ areas, allCityRadius: acr });
+      await db.ref('cities/'+regEntry.id+'/config').update({
+        areas,
+        allCityRadius,
+        center: { lat: roundCoord(cityLat), lng: roundCoord(cityLng) }
+      });
       showToast(regEntry.nameEn+' saved', 'success');
       onDone();
     } catch(e) { showToast('Save failed: '+e.message, 'error'); }
     setSaving(false);
   };
 
+  const deleteCity = async () => {
+    if (!window.confirm('Delete ' + regEntry.nameEn + '?\n\nThis removes the city config and registry entry. Custom places and reviews are kept.')) return;
+    try {
+      await Promise.all([
+        db.ref('cities/'+regEntry.id+'/config').remove(),
+        db.ref('settings/cityRegistry/'+cityKey).remove()
+      ]);
+      showToast(regEntry.nameEn+' deleted', 'info');
+      onDone();
+    } catch(e) { showToast('Delete failed: '+e.message, 'error'); }
+  };
+
   if (loading) return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100vh', color:'#94a3b8' }}>
       Loading {regEntry.nameEn}...
     </div>
+  );
+
+  const deleteBtn = (
+    <button onClick={deleteCity}
+      style={{ padding:'6px 12px', fontSize:12, background:'#fef2f2', border:'1px solid #fecaca',
+        borderRadius:8, cursor:'pointer', fontWeight:600, color:'#ef4444' }}>
+      🗑️ Delete
+    </button>
   );
 
   return (
@@ -637,6 +733,8 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
       allCityRadius={allCityRadius}
       onBack={onDone}
       onSave={saveCity} saving={saving}
+      extraButton={deleteBtn}
+      onCityConfigChange={setCityConfig}
     />
   );
 };
