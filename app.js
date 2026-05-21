@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.28';
+const VERSION = '0.2.29';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -232,30 +232,62 @@ async function fetchAreaDesc(areaName, cityName) {
   return '';
 }
 
-// Fetch a Wikipedia map/photo for the city's neighbourhoods (used as reference image)
+// Fetch a Wikipedia DISTRICT/NEIGHBOURHOOD MAP image (not a photo) for the city
 async function fetchWikiRefMap(cityName) {
-  const titles = [
+  const pageTitles = [
+    'Administrative divisions of ' + cityName,
+    'Boroughs of ' + cityName,
+    'Districts of ' + cityName,
     'Neighbourhoods of ' + cityName,
     'Neighborhoods of ' + cityName,
-    'Boroughs of ' + cityName,
-    cityName,
   ];
-  for (const title of titles) {
+  for (const title of pageTitles) {
     try {
+      // Get the list of images on the page
       const r = await fetch(
         'https://en.wikipedia.org/w/api.php?action=query&titles=' + encodeURIComponent(title) +
-        '&prop=pageimages&pithumbsize=800&piprop=thumbnail&format=json&origin=*'
+        '&prop=images&imlimit=30&format=json&origin=*'
       );
       if (!r.ok) continue;
       const d = await r.json();
       const pages = Object.values(d?.query?.pages || {});
-      for (const pg of pages) {
-        const url = pg?.thumbnail?.source;
-        if (url && !/flag|coat.of.arms|emblem|logo/i.test(url)) return url;
-      }
+      if (!pages[0] || pages[0].missing !== undefined) continue;
+      const images = pages[0]?.images || [];
+      // Prefer images with "map", "district", "borough", "quarter" in filename
+      const mapImg = images.find(img => {
+        const n = img.title.toLowerCase();
+        return /map|district|borough|quarter|neighbou|arrondissement|stadtbezirk|mcp/.test(n)
+          && !/(locator|location|flag|coat|logo|icon|portal|commons|wiki)/.test(n)
+          && /(\.svg|\.png|\.jpg)$/.test(n);
+      });
+      if (!mapImg) continue;
+      // Resolve the actual image URL
+      const r2 = await fetch(
+        'https://en.wikipedia.org/w/api.php?action=query&titles=' + encodeURIComponent(mapImg.title) +
+        '&prop=imageinfo&iiprop=url&iiurlwidth=900&format=json&origin=*'
+      );
+      if (!r2.ok) continue;
+      const d2 = await r2.json();
+      const pg2 = Object.values(d2?.query?.pages || {})[0];
+      const url = pg2?.imageinfo?.[0]?.thumburl || pg2?.imageinfo?.[0]?.url;
+      if (url) return url;
     } catch(e) { continue; }
   }
   return '';
+}
+
+// Ask AI for the single best emoji icon for a city (its famous symbol)
+async function generateCityIcon(cityName) {
+  if (!getApiKey()) return '';
+  const result = await callAI(
+    'Return a single emoji that best represents the city "' + cityName + '" as a tourist destination — use its most iconic landmark or cultural symbol.\n' +
+    'Examples: Paris→🗼  New York→🗽  Prague→🏰  Tokyo→⛩️  Cairo→🔺  Rome→🏛️  Sydney→🌉  Amsterdam→🚲  London→🎡  Barcelona→🏟️  Venice→🚢  Istanbul→🕌\n' +
+    'Return ONLY the single emoji, nothing else.',
+    10
+  );
+  if (!result || result.error) return '';
+  const m = (result.trim()).match(/\p{Extended_Pictographic}/u);
+  return m ? m[0] : '';
 }
 
 // Unified AI call — returns text string or { error: '...' }
@@ -426,7 +458,7 @@ const Toast = ({ msg, type, onDone }) => {
 //   2. cityLat/cityLng stored in refs so the init effect closure always has current values.
 //   3. mapReady state ensures the redraw effect runs with fresh props, not stale closure.
 //   4. flyTo wrapped in try-catch as a final safety net.
-const AreaMap = ({ areas, selectedIdx, cityLat, cityLng, allCityRadius, onSelect }) => {
+const AreaMap = ({ areas, selectedIdx, cityLat, cityLng, allCityRadius, onSelect, onMove }) => {
   const divRef      = useRef(null);
   const mapRef      = useRef(null);
   const layersRef   = useRef([]);
@@ -497,6 +529,21 @@ const AreaMap = ({ areas, selectedIdx, cityLat, cityLng, allCityRadius, onSelect
     if (selectedIdx !== null && areas && areas[selectedIdx]) {
       const a = areas[selectedIdx];
       try { map.flyTo([a.lat, a.lng], 14, { duration: 0.5 }); } catch(e) {}
+
+      // Draggable move handle — lets user reposition the area on the map
+      if (onMove) {
+        const moveIcon = L.divIcon({
+          className: '',
+          html: '<div style="width:26px;height:26px;background:white;border:3px solid #6366f1;border-radius:50%;cursor:move;display:flex;align-items:center;justify-content:center;font-size:15px;box-shadow:0 2px 8px rgba(99,102,241,0.45)">✛</div>',
+          iconSize: [26,26], iconAnchor: [13,13]
+        });
+        const mover = L.marker([a.lat, a.lng], { icon: moveIcon, draggable: true, zIndexOffset: 2000 }).addTo(map);
+        mover.on('dragend', e => {
+          const ll = e.target.getLatLng();
+          onMove(selectedIdx, roundCoord(ll.lat), roundCoord(ll.lng));
+        });
+        layersRef.current.push(mover);
+      }
     }
   }, [mapReady, areas, selectedIdx]);
 
@@ -671,6 +718,11 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
     setAreas(prev => { const a=[...prev]; [a[idx],a[next]]=[a[next],a[idx]]; return a; });
     setSelIdx(next); setIsDirty(true);
   };
+  const moveAreaOnMap = (idx, lat, lng) => {
+    setAreas(prev => prev.map((a,i) => i===idx ? {...a, lat, lng} : a));
+    setIsDirty(true);
+  };
+
   const addArea = () => {
     const a = { id:'area_'+Date.now(), labelEn:'New Area', label:'', descEn:'', desc:'',
       lat: roundCoord(cityLat), lng: roundCoord(cityLng), radius:1000, size:'medium', safety:'safe' };
@@ -960,7 +1012,7 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
         {/* Map -- takes remaining space, AreaMap fills it via height:100% */}
         <div style={{ flex:1, position:'relative', overflow:'hidden' }}>
           <AreaMap areas={areas} selectedIdx={selIdx} cityLat={cityLat} cityLng={cityLng}
-            allCityRadius={allCityRadius} onSelect={setSelIdx} />
+            allCityRadius={allCityRadius} onSelect={handleAreaClick} onMove={moveAreaOnMap} />
         </div>
 
         {/* Editor */}
@@ -990,6 +1042,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
   const [areas, setAreas]         = useState([]);
   const [selIdx, setSelIdx]       = useState(null);
   const [cityIcon, setCityIcon]   = useState('');
+  const [iconSuggesting, setIconSuggesting] = useState(false);
   const [foundCityHe, setFoundCityHe] = useState('');
   const [refMapUrl, setRefMapUrl] = useState('');
   const [saving, setSaving]       = useState(false);
@@ -1014,8 +1067,16 @@ const AddCityFlow = ({ showToast, onDone }) => {
       const cityTypes = ['locality','administrative_area_level_1','administrative_area_level_2'];
       const p = data.places?.find(pl => pl.types?.some(t => cityTypes.includes(t))) || data.places?.[0];
       if (p?.location) {
-        setFoundCity({ name:p.displayName?.text||query, address:p.formattedAddress||'',
+        const cityName = p.displayName?.text || query;
+        setFoundCity({ name:cityName, address:p.formattedAddress||'',
           lat:p.location.latitude, lng:p.location.longitude, viewport:p.viewport });
+        setCityIcon('');
+        if (getApiKey()) {
+          setIconSuggesting(true);
+          generateCityIcon(cityName)
+            .then(icon => { if (icon) setCityIcon(icon); })
+            .finally(() => setIconSuggesting(false));
+        }
       } else { showToast('City not found -- try a different spelling', 'error'); }
     } catch(e) { showToast('Search failed: '+e.message, 'error'); }
     setSearching(false);
@@ -1150,26 +1211,25 @@ const AddCityFlow = ({ showToast, onDone }) => {
             <div style={{ fontSize:11, color:'#94a3b8', marginTop:2 }}>{foundCity.lat.toFixed(4)}, {foundCity.lng.toFixed(4)}</div>
 
             <div style={{ marginTop:14, padding:'12px', background:'white', borderRadius:8, border:'1px solid #d1fae5' }}>
-              <div style={{ fontSize:11, fontWeight:700, color:'#374151', marginBottom:8, textTransform:'uppercase', letterSpacing:0.5 }}>City Icon</div>
-              <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
-                <div style={{ fontSize:36, width:52, height:52, display:'flex', alignItems:'center', justifyContent:'center',
-                  border:'2px solid #6366f1', borderRadius:10, background:'#eff6ff' }}>
-                  {cityIcon || '🏙️'}
-                </div>
-                <input value={cityIcon} onChange={e=>setCityIcon(e.target.value)} maxLength={4}
-                  placeholder="type emoji..."
-                  style={{ flex:1, padding:'8px 10px', border:'1px solid #e2e8f0', borderRadius:8,
-                    fontSize:16, fontFamily:'inherit', outline:'none' }} />
+              <div style={{ fontSize:11, fontWeight:700, color:'#374151', marginBottom:8, textTransform:'uppercase', letterSpacing:0.5, display:'flex', alignItems:'center', gap:8 }}>
+                City Icon
+                {iconSuggesting && <span style={{ fontSize:10, color:'#d97706', fontWeight:600 }}>🤖 AI suggesting...</span>}
               </div>
-              <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
-                {['🏙️','🗼','🏰','🎭','🏖️','⛩️','🕌','🏛️','🌉','🎠','🏔️','🌆','🌅','🗽','🏯','🕍','🌃','🎪'].map(e => (
-                  <button key={e} onClick={() => setCityIcon(e)}
-                    style={{ fontSize:20, width:36, height:36, border:'2px solid ' + (cityIcon===e ? '#6366f1' : '#e2e8f0'),
-                      borderRadius:8, cursor:'pointer', background: cityIcon===e ? '#eff6ff' : 'white',
-                      display:'flex', alignItems:'center', justifyContent:'center', padding:0 }}>
-                    {e}
-                  </button>
-                ))}
+              <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+                <div style={{ fontSize:40, width:56, height:56, display:'flex', alignItems:'center', justifyContent:'center',
+                  border:'2px solid ' + (iconSuggesting ? '#fcd34d' : '#6366f1'),
+                  borderRadius:12, background: iconSuggesting ? '#fefce8' : '#eff6ff', flexShrink:0 }}>
+                  {iconSuggesting ? '⏳' : (cityIcon || '🏙️')}
+                </div>
+                <div style={{ flex:1 }}>
+                  <input value={cityIcon} onChange={e=>setCityIcon(e.target.value)} maxLength={4}
+                    placeholder={iconSuggesting ? 'AI is choosing...' : 'type any emoji to override'}
+                    style={{ width:'100%', boxSizing:'border-box', padding:'7px 10px', border:'1px solid #e2e8f0',
+                      borderRadius:8, fontSize:16, fontFamily:'inherit', outline:'none' }} />
+                  <div style={{ fontSize:10, color:'#94a3b8', marginTop:4 }}>
+                    AI picks the city symbol automatically — type to override
+                  </div>
+                </div>
               </div>
             </div>
 
