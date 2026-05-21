@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.31';
+const VERSION = '0.2.32';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -290,43 +290,95 @@ async function generateCityIcon(cityName) {
   return m ? m[0] : '';
 }
 
-// Compass positions (fractional x,y in the SVG canvas) for the schema renderer
-const SCHEMA_POS = {
-  center:[0.50,0.50], c:[0.50,0.50],
-  n:[0.50,0.14], north:[0.50,0.14],
-  s:[0.50,0.86], south:[0.50,0.86],
-  e:[0.83,0.50], east:[0.83,0.50],
-  w:[0.17,0.50], west:[0.17,0.50],
-  ne:[0.78,0.18], nw:[0.22,0.18],
-  se:[0.78,0.82], sw:[0.22,0.82],
-};
 const SCHEMA_COLORS = ['#e8734a','#5b9dc9','#7db87a','#c97ab8','#c9a85b','#7a8ec9','#c97a7a','#7ac9b0','#a07ac9','#b8c97a'];
 
 // Render the neighborhood schema JSON to a data: SVG URL
+// Uses radial-gradient blobs that fade to transparent so overlapping areas blend
+// naturally — similar to a tourist neighborhood map with colored territories
 function renderNeighborhoodSchemaSvg(schema, cityName) {
-  const W = 500, H = 330;
-  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').slice(0,32);
+  const W = 580, H = 390;
+  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').slice(0,30);
+
+  // Tighter compass positions so large blobs naturally touch/overlap
+  const POS = {
+    center:[0.50,0.53], c:[0.50,0.53],
+    n:[0.50,0.15],  north:[0.50,0.15],
+    s:[0.50,0.88],  south:[0.50,0.88],
+    e:[0.85,0.53],  east:[0.85,0.53],
+    w:[0.15,0.53],  west:[0.15,0.53],
+    ne:[0.79,0.20], nw:[0.21,0.20],
+    se:[0.79,0.84], sw:[0.21,0.84],
+  };
+  // Blob sizes — large enough that adjacent positions overlap
+  const SZ = {
+    center:{rx:130,ry:78}, c:{rx:130,ry:78},
+    n:{rx:98,ry:60},   north:{rx:98,ry:60},
+    s:{rx:98,ry:60},   south:{rx:98,ry:60},
+    e:{rx:112,ry:62},  east:{rx:112,ry:62},
+    w:{rx:112,ry:62},  west:{rx:112,ry:62},
+    ne:{rx:102,ry:58}, nw:{rx:102,ry:58},
+    se:{rx:102,ry:58}, sw:{rx:102,ry:58},
+  };
+
   const blobs = schema.map((area, i) => {
-    const key = (area.pos||'center').toLowerCase().replace(/\s|-/g,'');
-    const [fx, fy] = SCHEMA_POS[key] || [0.5, 0.5];
+    const key = (area.pos||'center').toLowerCase().replace(/[\s-]/g,'');
+    const [fx, fy] = POS[key] || [0.5, 0.53];
+    const {rx, ry} = SZ[key] || {rx:100, ry:58};
     const isCenter = key === 'center' || key === 'c';
-    return { cx: fx*W, cy: fy*H, rx: isCenter?84:66, ry: isCenter?48:37,
+    return { idx:i, cx:fx*W, cy:fy*H, rx, ry,
       c: area.color || SCHEMA_COLORS[i % SCHEMA_COLORS.length],
-      name: esc(area.name||''), desc: esc(area.desc||''), isCenter };
+      name: esc(area.name||''), desc: esc((area.desc||'').slice(0,30)), isCenter };
   });
-  const center = blobs.find(b => b.isCenter);
-  const lines = center ? blobs.filter(b => !b.isCenter).map(b =>
-    `<line x1="${center.cx|0}" y1="${center.cy|0}" x2="${b.cx|0}" y2="${b.cy|0}" stroke="#cbbfaf" stroke-width="1.5" stroke-dasharray="6,4" stroke-linecap="round"/>`
-  ).join('') : '';
-  const shapes = blobs.map(b =>
-    `<ellipse cx="${b.cx|0}" cy="${b.cy|0}" rx="${b.rx}" ry="${b.ry}" fill="${b.c}" fill-opacity="0.28" stroke="${b.c}" stroke-width="2" stroke-opacity="0.65"/>` +
-    `<text x="${b.cx|0}" y="${(b.cy-5)|0}" text-anchor="middle" font-size="${b.isCenter?13.5:11.5}" font-family="'Helvetica Neue',Arial,sans-serif" fill="${b.c}" font-weight="800">${b.name}</text>` +
-    (b.desc ? `<text x="${b.cx|0}" y="${(b.cy+11)|0}" text-anchor="middle" font-size="8.5" font-family="Arial,sans-serif" fill="#5f5a52">${b.desc}</text>` : '')
+
+  // Each blob is a radial gradient: opaque core → transparent edge
+  // Overlapping blobs blend their colors naturally at the boundary
+  const defs = blobs.map(b =>
+    `<radialGradient id="rg${b.idx}" cx="50%" cy="50%" r="55%">` +
+    `<stop offset="0%"   stop-color="${b.c}" stop-opacity="0.82"/>` +
+    `<stop offset="60%"  stop-color="${b.c}" stop-opacity="0.55"/>` +
+    `<stop offset="100%" stop-color="${b.c}" stop-opacity="0.08"/>` +
+    `</radialGradient>`
   ).join('');
+
+  // Draw order: non-center areas first, center on top
+  const sorted = [...blobs].sort((a,b) => (a.isCenter ? 1 : 0) - (b.isCenter ? 1 : 0));
+
+  const ellipses = sorted.map(b =>
+    `<ellipse cx="${b.cx|0}" cy="${b.cy|0}" rx="${b.rx}" ry="${b.ry}" fill="url(#rg${b.idx})"/>`
+  ).join('');
+
+  // Text: white pill background for contrast, dark bold name, lighter desc
+  const labels = sorted.map(b => {
+    const fs = b.isCenter ? 16 : 13;
+    const pw = b.rx * 1.45 | 0, ph = b.desc ? 30 : 20;
+    const px = (b.cx - pw/2)|0, py = (b.cy - fs + 1)|0;
+    return [
+      `<rect x="${px}" y="${py}" width="${pw}" height="${ph}" rx="6" fill="white" fill-opacity="0.68"/>`,
+      `<text x="${b.cx|0}" y="${(b.cy+fs*0.45)|0}" text-anchor="middle" ` +
+        `font-size="${fs}" font-family="'Helvetica Neue',Arial,sans-serif" fill="#1c1712" font-weight="800">${b.name}</text>`,
+      b.desc
+        ? `<text x="${b.cx|0}" y="${(b.cy+fs*0.45+13)|0}" text-anchor="middle" ` +
+          `font-size="9.5" font-family="Arial,sans-serif" fill="#4a4035">${b.desc}</text>`
+        : '',
+    ].join('');
+  }).join('');
+
   const title = cityName
-    ? `<text x="${W/2}" y="16" text-anchor="middle" font-size="11" font-family="'Helvetica Neue',Arial,sans-serif" fill="#8a7a6a" font-weight="700" letter-spacing="2">${esc(cityName.toUpperCase())} NEIGHBORHOODS</text>`
+    ? `<text x="${W/2}" y="24" text-anchor="middle" font-size="14" ` +
+      `font-family="'Helvetica Neue',Arial,sans-serif" fill="#3a3020" font-weight="700" letter-spacing="3">` +
+      `${esc(cityName.toUpperCase())} NEIGHBORHOODS</text>`
     : '';
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}"><defs><radialGradient id="bg2" cx="50%" cy="55%" r="70%"><stop offset="0%" stop-color="#fdf8ef"/><stop offset="100%" stop-color="#ede5d6"/></radialGradient></defs><rect width="${W}" height="${H}" fill="url(#bg2)" rx="10"/>${title}${lines}${shapes}</svg>`;
+
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}">` +
+    `<defs>` +
+    `<radialGradient id="bgr" cx="50%" cy="52%" r="68%">` +
+    `<stop offset="0%" stop-color="#fdf9f2"/><stop offset="100%" stop-color="#ebe3d0"/>` +
+    `</radialGradient>${defs}</defs>` +
+    `<rect width="${W}" height="${H}" fill="url(#bgr)" rx="12"/>` +
+    `${title}${ellipses}${labels}` +
+    `</svg>`;
+
   return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
 }
 
@@ -730,8 +782,8 @@ const RefMapDialog = ({ src, onClose }) => {
   };
   const btnS = { padding:'2px 10px', fontSize:15, border:'1px solid #e2e8f0', borderRadius:6, cursor:'pointer', background:'white', lineHeight:1.4 };
   return (
-    <div style={{ position:'fixed', inset:0, zIndex:9500 }} onMouseDown={e => e.target===e.currentTarget && onClose()}>
-      <div style={{ position:'absolute', top:pos.y, left:pos.x, background:'white', borderRadius:12,
+    <div style={{ position:'fixed', inset:0, zIndex:9500, pointerEvents:'none' }}>
+      <div style={{ position:'absolute', top:pos.y, left:pos.x, background:'white', borderRadius:12, pointerEvents:'all',
         boxShadow:'0 12px 48px rgba(0,0,0,0.32)', border:'1px solid #e2e8f0', overflow:'hidden', minWidth:340 }}>
         {/* Drag handle / toolbar */}
         <div onMouseDown={onMouseDown} style={{ padding:'8px 12px', background:'#f8fafc', borderBottom:'1px solid #e2e8f0',
