@@ -17,9 +17,10 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION      = '0.2.18';
-const CLAUDE_URL   = 'https://api.anthropic.com/v1/messages';
-const getApiKey    = () => localStorage.getItem('foufou_anthropic_key') || '';
+const VERSION      = '0.2.19';
+// Gemini API -- free tier (1500 req/day), no credit card. Key from aistudio.google.com
+const GEMINI_URL   = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=';
+const getApiKey    = () => localStorage.getItem('foufou_ai_key') || '';
 const DEFAULT_PROMPT = `City: {cityName}
 
 You are building a tourist travel app. For EVERY neighborhood below you MUST fill all 3 fields.
@@ -197,38 +198,26 @@ async function generateWithAI(areas, cityName) {
   const prompt = getPrompt()
     .replace('{cityName}', cityName)
     .replace('{neighborhoods}', list);
-
-  // Try models in order — newest first, fall back to stable release
-  const models = ['claude-haiku-4-5-20251001', 'claude-3-5-haiku-20241022', 'claude-3-haiku-20240307'];
-  for (const model of models) {
-    try {
-      const r = await fetch(CLAUDE_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': key,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true'
-        },
-        body: JSON.stringify({ model, max_tokens: 2048,
-          messages: [{ role: 'user', content: prompt }] })
-      });
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({}));
-        console.warn('Claude API', model, r.status, err?.error?.message || '');
-        // 400 on this model — try next
-        if (r.status === 400 || r.status === 404) continue;
-        return null; // 401/403 — key problem, stop trying
-      }
-      const d = await r.json();
-      const text = (d.content?.[0]?.text || '').trim();
-      // Strip markdown code fences if model wraps in ```json ... ```
-      const clean = text.replace(/^```[a-z]*\n?/, '').replace(/\n?```$/, '').trim();
-      const arr = JSON.parse(clean);
-      return Array.isArray(arr) ? arr : null;
-    } catch(e) { console.warn('Claude attempt failed:', model, e.message); continue; }
-  }
-  return null;
+  try {
+    const r = await fetch(GEMINI_URL + key, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.7, maxOutputTokens: 2048 }
+      })
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      console.warn('Gemini API', r.status, err?.error?.message || JSON.stringify(err));
+      return null;
+    }
+    const d = await r.json();
+    const text = (d.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+    const clean = text.replace(/^```[a-z]*\n?/,'').replace(/\n?```$/,'').trim();
+    const arr = JSON.parse(clean);
+    return Array.isArray(arr) ? arr : null;
+  } catch(e) { console.warn('Gemini failed:', e.message); return null; }
 }
 
 // Translate/transliterate a city name to Hebrew via Claude.
@@ -236,23 +225,17 @@ async function getCityNameHebrew(cityName) {
   const key = getApiKey();
   if (!key) return '';
   try {
-    const r = await fetch(CLAUDE_URL, {
+    const r = await fetch(GEMINI_URL + key, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': key,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 30,
-        messages: [{ role: 'user', content: 'Translate/transliterate the city name "' + cityName + '" to Hebrew. Return only the Hebrew text.' }]
+        contents: [{ parts: [{ text: 'Translate/transliterate the city name "' + cityName + '" to Hebrew. Return only the Hebrew text, nothing else.' }] }],
+        generationConfig: { maxOutputTokens: 20 }
       })
     });
     if (!r.ok) return '';
     const d = await r.json();
-    return (d.content?.[0]?.text || '').trim();
+    return (d.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
   } catch { return ''; }
 }
 
@@ -581,11 +564,11 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
             <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10, flexWrap:'wrap' }}>
               <span style={{ fontSize:12, fontWeight:700, color:'#92400e', minWidth:60 }}>🔑 API Key</span>
               <input value={keyDraftLocal} onChange={e => setKeyDraftLocal(e.target.value)}
-                type="password" placeholder="sk-ant-..."
+                type="password" placeholder="AIza... (Google Gemini key from aistudio.google.com)"
                 style={{ flex:1, minWidth:200, padding:'5px 10px', border:'1px solid #fcd34d',
                   borderRadius:8, fontSize:12, fontFamily:'monospace', outline:'none' }} />
-              <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer"
-                style={{ fontSize:11, color:'#92400e', whiteSpace:'nowrap' }}>Get key ↗</a>
+              <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer"
+                style={{ fontSize:11, color:'#92400e', whiteSpace:'nowrap' }}>Get free key ↗</a>
             </div>
             <div style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
               <span style={{ fontSize:12, fontWeight:700, color:'#92400e', minWidth:60, paddingTop:4 }}>Prompt</span>
@@ -602,7 +585,7 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
                 style={{ padding:'5px 12px', fontSize:11, background:'white', border:'1px solid #e2e8f0',
                   borderRadius:8, cursor:'pointer', color:'#64748b' }}>Cancel</button>
               <button onClick={() => {
-                  localStorage.setItem('foufou_anthropic_key', keyDraftLocal.trim());
+                  localStorage.setItem('foufou_ai_key', keyDraftLocal.trim());
                   localStorage.setItem('foufou_ai_prompt', promptDraftLocal);
                   setShowKeyPanel(false);
                 }}
@@ -1164,7 +1147,7 @@ const FouFouBuild = () => {
   const [keyDraft, setKeyDraft]           = useState(getApiKey());
   const [promptDraft, setPromptDraft]     = useState(getPrompt());
   const saveAiSettings = () => {
-    localStorage.setItem('foufou_anthropic_key', keyDraft.trim());
+    localStorage.setItem('foufou_ai_key', keyDraft.trim());
     localStorage.setItem('foufou_ai_prompt', promptDraft);
     setShowKeyInput(false);
     showToast('AI settings saved', 'success');
@@ -1255,7 +1238,7 @@ const FouFouBuild = () => {
                 <div style={{ display:'flex', alignItems:'center', gap:10 }}>
                   <span style={{ fontSize:12, fontWeight:700, color:'#92400e', minWidth:80 }}>API Key</span>
                   <input value={keyDraft} onChange={e => setKeyDraft(e.target.value)}
-                    type="password" placeholder="sk-ant-..."
+                    type="password" placeholder="AIza... (Google Gemini key from aistudio.google.com)"
                     style={{ flex:1, padding:'6px 10px', border:'1px solid #fcd34d', borderRadius:8,
                       fontSize:12, outline:'none', fontFamily:'monospace', background:'white' }} />
                 </div>
