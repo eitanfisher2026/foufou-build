@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.24';
+const VERSION = '0.2.25';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -50,6 +50,31 @@ Neighborhoods:
 
 Return ONLY the JSON array. No explanation, no markdown, just the array.`;
 const getPrompt = () => localStorage.getItem('foufou_ai_prompt') || DEFAULT_PROMPT;
+
+const AREAS_PROMPT = `You are building a tourist travel app for {cityName}{country}.
+
+Generate 8-10 tourist neighborhoods that visitors actually explore.
+Each area needs ACCURATE center coordinates for THAT SPECIFIC neighborhood (not the city center).
+
+Return ONLY a JSON array, no other text:
+[{
+  "id": "snake_case_id",
+  "labelEn": "Name tourists know",
+  "label": "Hebrew script transliteration (REQUIRED)",
+  "lat": 37.9726,
+  "lng": 23.7285,
+  "radius": 800,
+  "descEn": "6-8 word tourist vibe",
+  "desc": "Hebrew translation of descEn (REQUIRED)",
+  "safety": "safe"
+}]
+
+Rules:
+- lat/lng: precise center of THAT neighborhood, 4 decimal places
+- radius: walkable tourist zone in meters (typically 400-2000m)
+- Prioritize areas tourists visit, not administrative boundaries
+- label and desc are REQUIRED in Hebrew script, never empty
+- safety: "safe", "caution", or "danger"`;
 const GOOGLE_KEY   = 'AIzaSyCE598tSisniM66ApqRvOyOq4svTf6pLHc';
 const PLACES_URL   = 'https://places.googleapis.com/v1/places:searchText';
 const OVERPASS_ENDPOINTS = [
@@ -270,6 +295,36 @@ async function generateWithAI(areas, cityName) {
     const arr = JSON.parse(clean);
     return Array.isArray(arr) ? arr : { error: 'AI returned unexpected format. Try again.' };
   } catch(e) { return { error: 'Could not parse AI response. Try adjusting the prompt.' }; }
+}
+
+// Generate city areas using AI — returns area array or { error }
+async function generateAreasWithAI(cityName, country) {
+  const prompt = AREAS_PROMPT
+    .replace('{cityName}', cityName)
+    .replace('{country}', country ? ' (' + country + ')' : '');
+  const result = await callAI(prompt, 3000);
+  if (!result || result.error) return result || { error: 'No response from AI' };
+  try {
+    const clean = result.replace(/^```[a-z]*\n?/,'').replace(/\n?```$/,'').trim();
+    const arr = JSON.parse(clean);
+    if (!Array.isArray(arr)) return { error: 'AI returned unexpected format' };
+    const areas = arr
+      .map((a, i) => ({
+        id: toId(a.id || a.labelEn || 'area_' + i),
+        labelEn: a.labelEn || '',
+        label: a.label || suggestHebrew(a.labelEn || ''),
+        lat: roundCoord(parseFloat(a.lat) || 0),
+        lng: roundCoord(parseFloat(a.lng) || 0),
+        radius: Math.max(300, Math.min(5000, parseInt(a.radius) || 800)),
+        descEn: a.descEn || '',
+        desc: a.desc || '',
+        size: (parseInt(a.radius) || 800) > 2000 ? 'large' : 'medium',
+        safety: a.safety || 'safe'
+      }))
+      .filter(a => a.lat !== 0 && a.lng !== 0);
+    if (areas.length < 3) return { error: 'AI returned too few areas (' + areas.length + ')' };
+    return areas;
+  } catch(e) { return { error: 'Could not parse AI areas. Try again.' }; }
 }
 
 async function getCityNameHebrew(cityName) {
@@ -883,45 +938,59 @@ const AddCityFlow = ({ showToast, onDone }) => {
     if (!foundCity) return;
     setGenerating(true);
     const { lat, lng, viewport } = foundCity;
-    const s = viewport?.low?.latitude  ?? lat-0.18, w = viewport?.low?.longitude  ?? lng-0.18;
-    const n = viewport?.high?.latitude ?? lat+0.18, e = viewport?.high?.longitude ?? lng+0.18;
-    const maxR = Math.max(viewport ? distM(s,w,n,e)/2 : 20000, 12000);
+    const country = (foundCity.address || '').split(',').pop()?.trim() || '';
+    let builtAreas = null;
 
-    const q = '[out:json][timeout:30];\n(\n' +
-      '  relation["boundary"="administrative"]["admin_level"~"^(8|9|10)$"]('+s+','+w+','+n+','+e+');\n' +
-      '  node["place"~"^(neighbourhood|suburb|quarter|borough|district)$"]["name"]('+s+','+w+','+n+','+e+');\n' +
-      '  way["place"~"^(neighbourhood|suburb|quarter|borough|district)$"]["name"]('+s+','+w+','+n+','+e+');\n' +
-      ');\nout center tags bb;';
-
-    try {
-      const data = await fetchOverpass(q);
-      let processed = data ? processOverpassAreas(data.elements||[], lat, lng, maxR) : [];
-      if (processed.length < 4) {
-        showToast(data ? 'Limited OSM data -- using compass layout' : 'OSM unavailable -- using compass layout', 'warning');
-        processed = generateCompassAreas(lat, lng);
+    // Step 1: try AI (gives accurate tourist areas with names + descriptions in one call)
+    if (getApiKey()) {
+      const aiResult = await generateAreasWithAI(foundCity.name, country);
+      if (Array.isArray(aiResult) && aiResult.length >= 3) {
+        builtAreas = aiResult;
+        getCityNameHebrew(foundCity.name).then(he => { if (he) setFoundCityHe(he); });
+      } else if (aiResult?.error) {
+        showToast('AI areas: ' + aiResult.error + ' — trying OpenStreetMap fallback', 'warning');
       }
-      const builtAreas = processed.map(buildArea);
-      setAreas(builtAreas);
-      setAllCityRadius(recalcRadius(lat, lng, builtAreas));
-      setSelIdx(null);
-      setStep('review');
-      // Background: AI generates descriptions + Hebrew translations
-      const cityName = foundCity.name;
-      generateWithAI(builtAreas, cityName).then(results => {
-        if (results) {
-          setAreas(prev => prev.map((a, i) => results[i]
-            ? { ...a, label: results[i].nameHe || a.label, descEn: results[i].descEn || a.descEn, desc: results[i].desc || a.desc }
-            : a
-          ));
-        } else {
-          // Fallback: Wikipedia descriptions only
-          Promise.all(builtAreas.map(a => a.descEn ? Promise.resolve('') : fetchAreaDesc(a.labelEn, cityName)))
-            .then(descs => setAreas(prev => prev.map((a, i) => descs[i] ? { ...a, descEn: descs[i] } : a)));
+    }
+
+    // Step 2: fallback to Overpass (OSM) if AI unavailable or failed
+    if (!builtAreas) {
+      const s = viewport?.low?.latitude  ?? lat-0.18, w = viewport?.low?.longitude  ?? lng-0.18;
+      const n = viewport?.high?.latitude ?? lat+0.18, e = viewport?.high?.longitude ?? lng+0.18;
+      const maxR = Math.max(viewport ? distM(s,w,n,e)/2 : 20000, 12000);
+      const q = '[out:json][timeout:30];\n(\n' +
+        '  relation["boundary"="administrative"]["admin_level"~"^(8|9|10)$"]('+s+','+w+','+n+','+e+');\n' +
+        '  node["place"~"^(neighbourhood|suburb|quarter|borough|district)$"]["name"]('+s+','+w+','+n+','+e+');\n' +
+        ');\nout center tags bb;';
+      try {
+        const data = await fetchOverpass(q);
+        let processed = data ? processOverpassAreas(data.elements||[], lat, lng, maxR) : [];
+        if (processed.length < 4) {
+          showToast('Limited map data — using compass layout', 'warning');
+          processed = generateCompassAreas(lat, lng);
         }
-      });
-      // Also get Hebrew city name
-      getCityNameHebrew(cityName).then(he => { if (he) setFoundCityHe(he); });
-    } catch(e) { showToast('Area generation failed: '+e.message, 'error'); }
+        builtAreas = processed.map(buildArea);
+        // Background: fill descriptions via AI
+        if (getApiKey()) {
+          generateWithAI(builtAreas, foundCity.name).then(results => {
+            if (results && !results.error) {
+              setAreas(prev => prev.map((a, i) => results[i]
+                ? { ...a, label: results[i].nameHe||a.label, descEn: results[i].descEn||a.descEn, desc: results[i].desc||a.desc }
+                : a));
+            }
+          });
+          getCityNameHebrew(foundCity.name).then(he => { if (he) setFoundCityHe(he); });
+        }
+      } catch(e) {
+        showToast('Area generation failed: ' + e.message, 'error');
+        setGenerating(false);
+        return;
+      }
+    }
+
+    setAreas(builtAreas);
+    setAllCityRadius(recalcRadius(lat, lng, builtAreas));
+    setSelIdx(null);
+    setStep('review');
     setGenerating(false);
   };
 
@@ -1147,6 +1216,62 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
   );
 };
 
+// ─── Dashboard ────────────────────────────────────────────────────────────────
+const SECTIONS = [
+  { id:'cities',    icon:'🏙️', title:'City Builder',        color:'#10b981', ready:true,
+    desc:'Create and edit cities — define areas, boundaries, names and characteristics.' },
+  { id:'favorites', icon:'⭐', title:'Favorites Generator',  color:'#f59e0b', ready:false,
+    desc:'AI agent adds 5 curated places per area per interest using Google Places.' },
+  { id:'tips',      icon:'💡', title:'Tips Generator',       color:'#6366f1', ready:false,
+    desc:'Generate practical tourist tips for each city, like the Bangkok tips in FouFou.' },
+  { id:'trails',    icon:'🗺️', title:'Trail Generator',      color:'#ec4899', ready:false,
+    desc:'Generate 2 recommended saved trails per area per city.' },
+];
+
+const Dashboard = ({ onNavigate, user, onSignOut }) => (
+  <div style={{ minHeight:'100vh', background:'#f8fafc' }}>
+    <div style={{ background:'white', borderBottom:'1px solid #e2e8f0', padding:'14px 32px',
+      display:'flex', alignItems:'center', justifyContent:'space-between',
+      boxShadow:'0 1px 4px rgba(0,0,0,0.06)' }}>
+      <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+        <span style={{ fontSize:24 }}>🏗️</span>
+        <div>
+          <div style={{ fontWeight:'bold', color:'#1e293b', fontSize:18, lineHeight:1.2 }}>FouFou Build</div>
+          <div style={{ fontSize:11, color:'#94a3b8' }}>City content management · v{VERSION}</div>
+        </div>
+      </div>
+      <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+        <div style={{ fontSize:12, color:'#64748b' }}>{user?.displayName||user?.email}</div>
+        <button onClick={onSignOut} style={{ fontSize:12, padding:'6px 12px', borderRadius:8,
+          border:'1px solid #e2e8f0', color:'#64748b', background:'white', cursor:'pointer' }}>Sign out</button>
+      </div>
+    </div>
+    <div style={{ maxWidth:760, margin:'0 auto', padding:'40px 24px' }}>
+      <h2 style={{ fontSize:20, fontWeight:'bold', color:'#1e293b', marginBottom:6 }}>What would you like to do?</h2>
+      <p style={{ fontSize:13, color:'#64748b', marginBottom:32 }}>All tasks use your configured AI — set it up via the 🔑 button inside any section.</p>
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
+        {SECTIONS.map(s => (
+          <div key={s.id}
+            onClick={() => s.ready && onNavigate(s.id)}
+            style={{ background:'white', borderRadius:16, padding:28,
+              border:'2px solid ' + (s.ready ? s.color : '#e2e8f0'),
+              cursor: s.ready ? 'pointer' : 'default',
+              opacity: s.ready ? 1 : 0.65, transition:'transform 0.15s, box-shadow 0.15s' }}
+            onMouseEnter={e => { if (s.ready) { e.currentTarget.style.transform='translateY(-3px)'; e.currentTarget.style.boxShadow='0 8px 24px rgba(0,0,0,0.1)'; }}}
+            onMouseLeave={e => { e.currentTarget.style.transform=''; e.currentTarget.style.boxShadow=''; }}>
+            <div style={{ fontSize:36, marginBottom:12 }}>{s.icon}</div>
+            <div style={{ fontSize:16, fontWeight:'bold', color:'#1e293b', marginBottom:8 }}>{s.title}</div>
+            <div style={{ fontSize:13, color:'#64748b', lineHeight:1.6 }}>{s.desc}</div>
+            {s.ready
+              ? <div style={{ marginTop:16, fontSize:13, fontWeight:700, color:s.color }}>Open →</div>
+              : <div style={{ marginTop:16, fontSize:11, color:'#94a3b8', fontStyle:'italic' }}>Coming soon</div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  </div>
+);
+
 // ─── City List ────────────────────────────────────────────────────────────────
 const CityList = ({ onAddCity, onEditCity }) => {
   const [cities, setCities]   = useState({});
@@ -1235,7 +1360,7 @@ const FouFouBuild = () => {
   const [authLoading, setAuthLoading] = useState(true);
   const [user, setUser]               = useState(null);
   const [userRole, setUserRole]       = useState(0);
-  const [view, setView]               = useState('cities');
+  const [view, setView]               = useState('dashboard');
   const [editingCity, setEditingCity] = useState(null);
   const [toast, setToast]             = useState(null);
   const [showKeyInput, setShowKeyInput]       = useState(false);
@@ -1306,16 +1431,23 @@ const FouFouBuild = () => {
 
   return (
     <div style={{ minHeight:'100vh', background:'#f8fafc' }}>
+      {view === 'dashboard' && (
+        <Dashboard user={user} onSignOut={signOut} onNavigate={id => setView(id)} />
+      )}
       {(view === 'cities') && (
         <>
           <div style={{ background:'white', borderBottom:'1px solid #e2e8f0', padding:'14px 24px',
             display:'flex', alignItems:'center', justifyContent:'space-between',
             position:'sticky', top:0, zIndex:10, boxShadow:'0 1px 4px rgba(0,0,0,0.06)' }}>
-            <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-              <span style={{ fontSize:22 }}>🏗️</span>
+            <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+              <button onClick={() => setView('dashboard')}
+                style={{ fontSize:13, color:'#6366f1', background:'none', border:'none',
+                  cursor:'pointer', fontWeight:600 }}>← Dashboard</button>
+              <div style={{ width:1, height:20, background:'#e2e8f0' }} />
+              <span style={{ fontSize:22 }}>🏙️</span>
               <div>
-                <div style={{ fontWeight:'bold', color:'#1e293b', fontSize:16, lineHeight:1.2 }}>FouFou Build</div>
-                <div style={{ fontSize:11, color:'#94a3b8' }}>City management · v{VERSION}</div>
+                <div style={{ fontWeight:'bold', color:'#1e293b', fontSize:16, lineHeight:1.2 }}>City Builder</div>
+                <div style={{ fontSize:11, color:'#94a3b8' }}>v{VERSION}</div>
               </div>
             </div>
             <div style={{ display:'flex', alignItems:'center', gap:8 }}>
