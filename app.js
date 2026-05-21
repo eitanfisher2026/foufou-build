@@ -17,25 +17,29 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION      = '0.2.16';
+const VERSION      = '0.2.17';
 const CLAUDE_URL   = 'https://api.anthropic.com/v1/messages';
 const getApiKey    = () => localStorage.getItem('foufou_anthropic_key') || '';
 const DEFAULT_PROMPT = `City: {cityName}
 
-For each neighborhood, give tourist info for a travel app.
-Return a JSON array (same order as input, one object per neighborhood):
-[{"nameHe":"Hebrew transliteration of the area name","descEn":"6-8 word tourist vibe in English","desc":"exact Hebrew translation of descEn"},...]
+You are building a tourist travel app. For EVERY neighborhood below you MUST fill all 3 fields.
 
-Style for descEn (short, vivid, tourist-focused):
-- "Historic temples, street food, canal views"
-- "Upscale cafes, luxury boutiques, leafy streets"
-- "Gritty markets, backpacker bars, urban buzz"
-- "Beachfront dining, nightlife, resort hotels"
+Return a JSON array — one object per neighborhood, same order as input:
+[{"nameHe":"Hebrew name/transliteration","descEn":"6-8 word tourist vibe","desc":"EXACT Hebrew translation of descEn"},...]
+
+Rules:
+- nameHe: transliterate or translate the area name into Hebrew script (REQUIRED, never leave empty)
+- descEn: 6-8 words max, vivid tourist perspective. Examples:
+  "Historic temples, street food, canal views"
+  "Upscale cafes, luxury boutiques, leafy streets"
+  "Gritty markets, backpacker bars, urban buzz"
+  "Lively nightlife, rooftop bars, modern vibe"
+- desc: translate descEn to Hebrew word-for-word (REQUIRED, never leave empty)
 
 Neighborhoods:
 {neighborhoods}
 
-Return ONLY the JSON array, no other text.`;
+Return ONLY the JSON array. No explanation, no markdown, just the array.`;
 const getPrompt = () => localStorage.getItem('foufou_ai_prompt') || DEFAULT_PROMPT;
 const GOOGLE_KEY   = 'AIzaSyCE598tSisniM66ApqRvOyOq4svTf6pLHc';
 const PLACES_URL   = 'https://places.googleapis.com/v1/places:searchText';
@@ -560,21 +564,49 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
 
         {/* API key panel */}
         {showKeyPanel && (
-          <div style={{ padding:'10px 16px', background:'#fefce8', borderTop:'1px solid #fde68a',
-            display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
-            <span style={{ fontSize:12, fontWeight:700, color:'#92400e' }}>🔑 Anthropic API Key</span>
-            <input value={keyDraftLocal} onChange={e => setKeyDraftLocal(e.target.value)}
-              type="password" placeholder="sk-ant-..."
-              style={{ flex:1, minWidth:200, padding:'5px 10px', border:'1px solid #fcd34d',
-                borderRadius:8, fontSize:12, fontFamily:'monospace', outline:'none' }} />
-            <button onClick={() => {
-                localStorage.setItem('foufou_anthropic_key', keyDraftLocal.trim());
-                setShowKeyPanel(false);
-              }}
-              style={{ padding:'5px 14px', background:'#d97706', color:'white', border:'none',
-                borderRadius:8, fontSize:12, fontWeight:'bold', cursor:'pointer' }}>Save</button>
-            <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer"
-              style={{ fontSize:11, color:'#92400e' }}>Get key ↗</a>
+          <div style={{ padding:'12px 16px', background:'#fefce8', borderTop:'1px solid #fde68a' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10, flexWrap:'wrap' }}>
+              <span style={{ fontSize:12, fontWeight:700, color:'#92400e', minWidth:60 }}>🔑 API Key</span>
+              <input value={keyDraftLocal} onChange={e => setKeyDraftLocal(e.target.value)}
+                type="password" placeholder="sk-ant-..."
+                style={{ flex:1, minWidth:200, padding:'5px 10px', border:'1px solid #fcd34d',
+                  borderRadius:8, fontSize:12, fontFamily:'monospace', outline:'none' }} />
+              <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer"
+                style={{ fontSize:11, color:'#92400e', whiteSpace:'nowrap' }}>Get key ↗</a>
+            </div>
+            <div style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
+              <span style={{ fontSize:12, fontWeight:700, color:'#92400e', minWidth:60, paddingTop:4 }}>Prompt</span>
+              <textarea
+                value={keyDraftLocal === getApiKey()
+                  ? (localStorage.getItem('foufou_local_prompt') || getPrompt())
+                  : undefined}
+                defaultValue={getPrompt()}
+                id="prompt-editor"
+                rows={8} spellCheck={false}
+                onChange={e => localStorage.setItem('foufou_local_prompt', e.target.value)}
+                style={{ flex:1, padding:'6px 10px', border:'1px solid #fcd34d', borderRadius:8,
+                  fontSize:11, fontFamily:'monospace', outline:'none', resize:'vertical', lineHeight:1.5 }} />
+            </div>
+            <div style={{ display:'flex', gap:8, marginTop:8, justifyContent:'flex-end' }}>
+              <button onClick={() => {
+                  localStorage.setItem('foufou_ai_prompt', DEFAULT_PROMPT);
+                  localStorage.removeItem('foufou_local_prompt');
+                  document.getElementById('prompt-editor').value = DEFAULT_PROMPT;
+                }}
+                style={{ padding:'5px 12px', fontSize:11, background:'white', border:'1px solid #fcd34d',
+                  borderRadius:8, cursor:'pointer', color:'#92400e' }}>Reset</button>
+              <button onClick={() => setShowKeyPanel(false)}
+                style={{ padding:'5px 12px', fontSize:11, background:'white', border:'1px solid #e2e8f0',
+                  borderRadius:8, cursor:'pointer', color:'#64748b' }}>Cancel</button>
+              <button onClick={() => {
+                  localStorage.setItem('foufou_anthropic_key', keyDraftLocal.trim());
+                  const ta = document.getElementById('prompt-editor');
+                  if (ta) localStorage.setItem('foufou_ai_prompt', ta.value);
+                  setShowKeyPanel(false);
+                }}
+                style={{ padding:'5px 14px', background:'#d97706', color:'white', border:'none',
+                  borderRadius:8, fontSize:12, fontWeight:'bold', cursor:'pointer' }}>Save</button>
+            </div>
           </div>
         )}
 
