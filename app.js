@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION      = '0.2.15';
+const VERSION      = '0.2.16';
 const CLAUDE_URL   = 'https://api.anthropic.com/v1/messages';
 const getApiKey    = () => localStorage.getItem('foufou_anthropic_key') || '';
 const DEFAULT_PROMPT = `City: {cityName}
@@ -447,7 +447,9 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
   // UI state
   const [showCfg, setShowCfg]     = useState(false);
   const [isDirty, setIsDirty]     = useState(false);
-  const [aiFilling, setAiFilling] = useState(false);
+  const [aiFilling, setAiFilling]   = useState(false);
+  const [showKeyPanel, setShowKeyPanel] = useState(false);
+  const [keyDraftLocal, setKeyDraftLocal] = useState(getApiKey());
 
   const notify = (overrides) => {
     if (onCityConfigChange) onCityConfigChange({
@@ -515,9 +517,17 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
                 borderRadius:8, cursor:'pointer', color:'#475569', background:'#f8fafc' }}>
               Show All
             </button>
+            <button onClick={() => setShowKeyPanel(v => !v)}
+              title="Anthropic API key"
+              style={{ padding:'6px 10px', fontSize:12, border:'1px solid #e2e8f0',
+                borderRadius:8, cursor:'pointer', fontWeight:600,
+                background: getApiKey() ? '#f0fdf4' : '#fef3c7',
+                color: getApiKey() ? '#16a34a' : '#d97706' }}>
+              {getApiKey() ? '🔑 ✓' : '🔑 Key'}
+            </button>
             {onAIFill && (
               <button onClick={async () => {
-                  if (!getApiKey()) { alert('Enter your Anthropic API key first (🔑 button in the main header)'); return; }
+                  if (!getApiKey()) { setShowKeyPanel(true); return; }
                   setAiFilling(true);
                   await onAIFill(areas, setAreas);
                   setIsDirty(true); setAiFilling(false);
@@ -526,7 +536,7 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
                 style={{ padding:'6px 10px', fontSize:12, border:'1px solid #e2e8f0',
                   borderRadius:8, cursor:'pointer', fontWeight:600,
                   background:'#fef3c7', color:'#d97706', opacity: aiFilling ? 0.6 : 1 }}>
-                {aiFilling ? '⏳ Filling...' : '🤖 AI Fill'}
+                {aiFilling ? '⏳...' : '🤖 AI Fill'}
               </button>
             )}
             <button onClick={() => setShowCfg(v => !v)}
@@ -547,6 +557,26 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
             </button>
           </div>
         </div>
+
+        {/* API key panel */}
+        {showKeyPanel && (
+          <div style={{ padding:'10px 16px', background:'#fefce8', borderTop:'1px solid #fde68a',
+            display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+            <span style={{ fontSize:12, fontWeight:700, color:'#92400e' }}>🔑 Anthropic API Key</span>
+            <input value={keyDraftLocal} onChange={e => setKeyDraftLocal(e.target.value)}
+              type="password" placeholder="sk-ant-..."
+              style={{ flex:1, minWidth:200, padding:'5px 10px', border:'1px solid #fcd34d',
+                borderRadius:8, fontSize:12, fontFamily:'monospace', outline:'none' }} />
+            <button onClick={() => {
+                localStorage.setItem('foufou_anthropic_key', keyDraftLocal.trim());
+                setShowKeyPanel(false);
+              }}
+              style={{ padding:'5px 14px', background:'#d97706', color:'white', border:'none',
+                borderRadius:8, fontSize:12, fontWeight:'bold', cursor:'pointer' }}>Save</button>
+            <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer"
+              style={{ fontSize:11, color:'#92400e' }}>Get key ↗</a>
+          </div>
+        )}
 
         {/* City config panel -- all city-level fields */}
         {showCfg && (
