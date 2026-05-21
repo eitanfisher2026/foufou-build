@@ -17,16 +17,17 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION      = '0.2.11';
+const VERSION      = '0.2.12';
 const GOOGLE_KEY   = 'AIzaSyCE598tSisniM66ApqRvOyOq4svTf6pLHc';
 const PLACES_URL   = 'https://places.googleapis.com/v1/places:searchText';
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
 ];
-// CartoDB Positron -- free, no API key, no domain restriction
-const MAP_TILES    = 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
-const MAP_ATTR     = '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>';
+// MapTiler streets-v2 -- same key + URL as foufou-dev (domain eitanfisher2026.github.io is allowed)
+const MAPTILER_KEY = 'Uvu44hp7joiCfp72GhTj';
+const MAP_TILES    = 'https://api.maptiler.com/maps/streets-v2/256/{z}/{x}/{y}.png?key=' + MAPTILER_KEY;
+const MAP_ATTR     = '&copy; <a href="https://www.maptiler.com/">MapTiler</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
 const COLORS = ['#4a90d9','#e8a838','#d95555','#3bba7e','#d97eb5','#7c7ce0','#9b7ed9','#2eb8c9','#e08540','#b36dd9','#38b3a0','#c93d5a'];
 
 const HE_WORDS = {
@@ -276,10 +277,10 @@ const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown
   const txt = (label, key, dir) => (
     <div style={{ marginBottom:10 }}>
       <div style={{ fontSize:11, fontWeight:600, color:'#64748b', marginBottom:4 }}>{label}</div>
-      <textarea value={area[key]||''} onChange={e => onChange({...area,[key]:e.target.value})}
-        rows={2} dir={dir||'ltr'}
+      <input value={area[key]||''} onChange={e => onChange({...area,[key]:e.target.value})}
+        placeholder="One sentence..." dir={dir||'ltr'}
         style={{ width:'100%', boxSizing:'border-box', padding:'6px 10px', border:'1px solid #e2e8f0',
-          borderRadius:8, fontSize:13, outline:'none', fontFamily:'inherit', resize:'vertical' }} />
+          borderRadius:8, fontSize:13, outline:'none', fontFamily:'inherit' }} />
     </div>
   );
 
@@ -408,6 +409,7 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
             <span style={{ fontWeight:'bold', color:'#1e293b', fontSize:15 }}>
               {cfgIcon} {cfgNameEn || title}
             </span>
+            {cfgNameHe && <span style={{ color:'#64748b', fontSize:14 }} dir="rtl">{cfgNameHe}</span>}
             <span style={{ color:'#94a3b8', fontSize:13 }}>-- {areas.length} areas</span>
           </div>
           <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
