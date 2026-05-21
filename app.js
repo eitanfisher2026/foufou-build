@@ -17,9 +17,9 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION      = '0.2.19';
+const VERSION      = '0.2.20';
 // Gemini API -- free tier (1500 req/day), no credit card. Key from aistudio.google.com
-const GEMINI_URL   = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=';
+const GEMINI_URL   = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=';
 const getApiKey    = () => localStorage.getItem('foufou_ai_key') || '';
 const DEFAULT_PROMPT = `City: {cityName}
 
