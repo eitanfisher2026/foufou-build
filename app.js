@@ -17,7 +17,26 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION      = '0.2.13';
+const VERSION      = '0.2.15';
+const CLAUDE_URL   = 'https://api.anthropic.com/v1/messages';
+const getApiKey    = () => localStorage.getItem('foufou_anthropic_key') || '';
+const DEFAULT_PROMPT = `City: {cityName}
+
+For each neighborhood, give tourist info for a travel app.
+Return a JSON array (same order as input, one object per neighborhood):
+[{"nameHe":"Hebrew transliteration of the area name","descEn":"6-8 word tourist vibe in English","desc":"exact Hebrew translation of descEn"},...]
+
+Style for descEn (short, vivid, tourist-focused):
+- "Historic temples, street food, canal views"
+- "Upscale cafes, luxury boutiques, leafy streets"
+- "Gritty markets, backpacker bars, urban buzz"
+- "Beachfront dining, nightlife, resort hotels"
+
+Neighborhoods:
+{neighborhoods}
+
+Return ONLY the JSON array, no other text.`;
+const getPrompt = () => localStorage.getItem('foufou_ai_prompt') || DEFAULT_PROMPT;
 const GOOGLE_KEY   = 'AIzaSyCE598tSisniM66ApqRvOyOq4svTf6pLHc';
 const PLACES_URL   = 'https://places.googleapis.com/v1/places:searchText';
 const OVERPASS_ENDPOINTS = [
@@ -163,6 +182,63 @@ async function fetchAreaDesc(areaName, cityName) {
     } catch(e) { continue; }
   }
   return '';
+}
+
+// Call Claude Haiku to generate tourist descriptions + Hebrew for all areas in one batch.
+// Returns array of {nameHe, descEn, desc} or null if no key / error.
+async function generateWithAI(areas, cityName) {
+  const key = getApiKey();
+  if (!key) return null;
+  const list = areas.map((a, i) => i + ': ' + (a.labelEn || '')).join('\n');
+  const prompt = getPrompt()
+    .replace('{cityName}', cityName)
+    .replace('{neighborhoods}', list);
+  try {
+    const r = await fetch(CLAUDE_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 2048,
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    const text = (d.content?.[0]?.text || '').trim();
+    const arr = JSON.parse(text);
+    return Array.isArray(arr) ? arr : null;
+  } catch(e) { return null; }
+}
+
+// Translate/transliterate a city name to Hebrew via Claude.
+async function getCityNameHebrew(cityName) {
+  const key = getApiKey();
+  if (!key) return '';
+  try {
+    const r = await fetch(CLAUDE_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 30,
+        messages: [{ role: 'user', content: 'Translate/transliterate the city name "' + cityName + '" to Hebrew. Return only the Hebrew text.' }]
+      })
+    });
+    if (!r.ok) return '';
+    const d = await r.json();
+    return (d.content?.[0]?.text || '').trim();
+  } catch { return ''; }
 }
 
 function buildArea(a, i) {
@@ -354,7 +430,7 @@ const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown
 // ─── Shared review layout (used by AddCityFlow and CityEditor) ────────────────
 const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
   cityLat: initLat, cityLng: initLng, allCityRadius: initRadius,
-  initMeta, onBack, onSave, saving, extraButton, onCityConfigChange }) => {
+  initMeta, onBack, onSave, saving, extraButton, onCityConfigChange, onAIFill }) => {
 
   // Geo config
   const [cityLat, setCityLat]           = useState(initLat || 30);
@@ -369,8 +445,9 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
   const [distMultiplier, setDistMultiplier] = useState(initMeta?.distanceMultiplier ?? 1.05);
   const [refMapUrl,      setRefMapUrl]      = useState(initMeta?.referenceMapUrl || '');
   // UI state
-  const [showCfg, setShowCfg] = useState(false);
-  const [isDirty, setIsDirty] = useState(false);
+  const [showCfg, setShowCfg]     = useState(false);
+  const [isDirty, setIsDirty]     = useState(false);
+  const [aiFilling, setAiFilling] = useState(false);
 
   const notify = (overrides) => {
     if (onCityConfigChange) onCityConfigChange({
@@ -438,6 +515,20 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
                 borderRadius:8, cursor:'pointer', color:'#475569', background:'#f8fafc' }}>
               Show All
             </button>
+            {onAIFill && (
+              <button onClick={async () => {
+                  if (!getApiKey()) { alert('Enter your Anthropic API key first (🔑 button in the main header)'); return; }
+                  setAiFilling(true);
+                  await onAIFill(areas, setAreas);
+                  setIsDirty(true); setAiFilling(false);
+                }}
+                disabled={aiFilling}
+                style={{ padding:'6px 10px', fontSize:12, border:'1px solid #e2e8f0',
+                  borderRadius:8, cursor:'pointer', fontWeight:600,
+                  background:'#fef3c7', color:'#d97706', opacity: aiFilling ? 0.6 : 1 }}>
+                {aiFilling ? '⏳ Filling...' : '🤖 AI Fill'}
+              </button>
+            )}
             <button onClick={() => setShowCfg(v => !v)}
               style={{ padding:'6px 10px', fontSize:12, border:'1px solid #e2e8f0',
                 borderRadius:8, cursor:'pointer', fontWeight:600,
@@ -619,6 +710,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
   const [areas, setAreas]         = useState([]);
   const [selIdx, setSelIdx]       = useState(null);
   const [cityIcon, setCityIcon]   = useState('');
+  const [foundCityHe, setFoundCityHe] = useState('');
   const [saving, setSaving]       = useState(false);
   const [allCityRadius, setAllCityRadius] = useState(15000);
 
@@ -674,15 +766,22 @@ const AddCityFlow = ({ showToast, onDone }) => {
       setAllCityRadius(recalcRadius(lat, lng, builtAreas));
       setSelIdx(null);
       setStep('review');
-      // Background: fetch English descriptions from Wikipedia for each area
+      // Background: AI generates descriptions + Hebrew translations
       const cityName = foundCity.name;
-      Promise.all(builtAreas.map((area, i) =>
-        area.descEn ? Promise.resolve(null) : fetchAreaDesc(area.labelEn, cityName)
-      )).then(descs => {
-        setAreas(prev => prev.map((a, i) =>
-          descs[i] ? { ...a, descEn: descs[i] } : a
-        ));
+      generateWithAI(builtAreas, cityName).then(results => {
+        if (results) {
+          setAreas(prev => prev.map((a, i) => results[i]
+            ? { ...a, label: results[i].nameHe || a.label, descEn: results[i].descEn || a.descEn, desc: results[i].desc || a.desc }
+            : a
+          ));
+        } else {
+          // Fallback: Wikipedia descriptions only
+          Promise.all(builtAreas.map(a => a.descEn ? Promise.resolve('') : fetchAreaDesc(a.labelEn, cityName)))
+            .then(descs => setAreas(prev => prev.map((a, i) => descs[i] ? { ...a, descEn: descs[i] } : a)));
+        }
       });
+      // Also get Hebrew city name
+      getCityNameHebrew(cityName).then(he => { if (he) setFoundCityHe(he); });
     } catch(e) { showToast('Area generation failed: '+e.message, 'error'); }
     setGenerating(false);
   };
@@ -785,7 +884,11 @@ const AddCityFlow = ({ showToast, onDone }) => {
       selIdx={selIdx} setSelIdx={setSelIdx}
       cityLat={foundCity?.lat} cityLng={foundCity?.lng}
       allCityRadius={allCityRadius}
-      initMeta={{ icon: cityIcon||'🏙️', nameEn: foundCity?.name||'', nameHe: '', dayStartHour:7, nightStartHour:18, distanceMultiplier:1.05 }}
+      initMeta={{ icon: cityIcon||'🏙️', nameEn: foundCity?.name||'', nameHe: foundCityHe, dayStartHour:7, nightStartHour:18, distanceMultiplier:1.05 }}
+      onAIFill={async (currentAreas, setAreas) => {
+        const results = await generateWithAI(currentAreas, foundCity?.name||'');
+        if (results) setAreas(prev => prev.map((a,i) => results[i] ? {...a, label:results[i].nameHe||a.label, descEn:results[i].descEn||a.descEn, desc:results[i].desc||a.desc} : a));
+      }}
       onBack={() => setStep('search')}
       onSave={saveCity} saving={saving}
     />
@@ -891,6 +994,12 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
       onBack={onDone}
       onSave={saveCity} saving={saving}
       extraButton={deleteBtn}
+      onAIFill={async (currentAreas, setAreasFn) => {
+        const results = await generateWithAI(currentAreas, regEntry.nameEn);
+        if (results) setAreasFn(prev => prev.map((a,i) => results[i]
+          ? { ...a, label: results[i].nameHe||a.label, descEn: results[i].descEn||a.descEn, desc: results[i].desc||a.desc }
+          : a));
+      }}
     />
   );
 };
@@ -984,8 +1093,17 @@ const FouFouBuild = () => {
   const [user, setUser]               = useState(null);
   const [userRole, setUserRole]       = useState(0);
   const [view, setView]               = useState('cities');
-  const [editingCity, setEditingCity] = useState(null); // { key, entry }
+  const [editingCity, setEditingCity] = useState(null);
   const [toast, setToast]             = useState(null);
+  const [showKeyInput, setShowKeyInput]   = useState(false);
+  const [keyDraft, setKeyDraft]           = useState(getApiKey());
+  const [promptDraft, setPromptDraft]     = useState(getPrompt());
+  const saveAiSettings = () => {
+    localStorage.setItem('foufou_anthropic_key', keyDraft.trim());
+    localStorage.setItem('foufou_ai_prompt', promptDraft);
+    setShowKeyInput(false);
+    showToast('AI settings saved', 'success');
+  };
 
   const showToast = (msg, type) => setToast({ msg, type:type||'info', key:Date.now() });
 
@@ -1052,13 +1170,51 @@ const FouFouBuild = () => {
                 <div style={{ fontSize:11, color:'#94a3b8' }}>City management · v{VERSION}</div>
               </div>
             </div>
-            <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
               <div style={{ fontSize:12, color:'#64748b' }}>{user.displayName||user.email}</div>
+              <button onClick={() => setShowKeyInput(v => !v)} title="Anthropic API key for AI descriptions"
+                style={{ fontSize:12, padding:'5px 10px', borderRadius:8, border:'1px solid #e2e8f0',
+                  background: getApiKey() ? '#f0fdf4' : '#fef3c7', cursor:'pointer',
+                  color: getApiKey() ? '#16a34a' : '#d97706' }}>
+                {getApiKey() ? '🔑 AI ✓' : '🔑 AI Key'}
+              </button>
               <button onClick={signOut}
                 style={{ fontSize:12, padding:'6px 12px', borderRadius:8, border:'1px solid #e2e8f0',
                   color:'#64748b', background:'white', cursor:'pointer' }}>Sign out</button>
             </div>
           </div>
+          {/* AI settings panel */}
+          {showKeyInput && (
+            <div style={{ background:'#fefce8', borderBottom:'1px solid #fde68a', padding:'12px 24px' }}>
+              <div style={{ maxWidth:800, margin:'0 auto', display:'flex', flexDirection:'column', gap:10 }}>
+                <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                  <span style={{ fontSize:12, fontWeight:700, color:'#92400e', minWidth:80 }}>API Key</span>
+                  <input value={keyDraft} onChange={e => setKeyDraft(e.target.value)}
+                    type="password" placeholder="sk-ant-..."
+                    style={{ flex:1, padding:'6px 10px', border:'1px solid #fcd34d', borderRadius:8,
+                      fontSize:12, outline:'none', fontFamily:'monospace', background:'white' }} />
+                </div>
+                <div style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
+                  <span style={{ fontSize:12, fontWeight:700, color:'#92400e', minWidth:80, paddingTop:4 }}>Prompt</span>
+                  <textarea value={promptDraft} onChange={e => setPromptDraft(e.target.value)}
+                    rows={10} spellCheck={false}
+                    style={{ flex:1, padding:'8px 10px', border:'1px solid #fcd34d', borderRadius:8,
+                      fontSize:12, fontFamily:'monospace', outline:'none', resize:'vertical', lineHeight:1.5 }} />
+                </div>
+                <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+                  <button onClick={() => { setPromptDraft(DEFAULT_PROMPT); }}
+                    style={{ padding:'6px 14px', fontSize:12, background:'white', border:'1px solid #fcd34d',
+                      borderRadius:8, cursor:'pointer', color:'#92400e' }}>Reset prompt</button>
+                  <button onClick={() => setShowKeyInput(false)}
+                    style={{ padding:'6px 14px', fontSize:12, background:'white', border:'1px solid #e2e8f0',
+                      borderRadius:8, cursor:'pointer', color:'#64748b' }}>Cancel</button>
+                  <button onClick={saveAiSettings}
+                    style={{ padding:'6px 14px', fontSize:12, background:'#d97706', color:'white',
+                      border:'none', borderRadius:8, cursor:'pointer', fontWeight:'bold' }}>Save</button>
+                </div>
+              </div>
+            </div>
+          )}
           <CityList
             onAddCity={() => setView('add-city')}
             onEditCity={(key, entry) => { setEditingCity({ key, entry }); setView('edit-city'); }}
