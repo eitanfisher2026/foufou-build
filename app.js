@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.27';
+const VERSION = '0.2.28';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -51,31 +51,39 @@ Neighborhoods:
 Return ONLY the JSON array. No explanation, no markdown, just the array.`;
 const getPrompt = () => localStorage.getItem('foufou_ai_prompt') || DEFAULT_PROMPT;
 
-const AREAS_PROMPT = `You are building a tourist travel app for {cityName}{country}.
+const AREAS_PROMPT = `You are a travel expert building a tourist app for {cityName}{country}.
+{cityCenter}
+List 8-10 well-known tourist neighborhoods spread across the ENTIRE city — not clustered near the center.
 
-Generate 8-10 tourist neighborhoods that visitors actually explore.
-Each area needs ACCURATE center coordinates for THAT SPECIFIC neighborhood (not the city center).
-
-Return ONLY a JSON array, no other text:
+Return ONLY a JSON array (no markdown, no explanation):
 [{
   "id": "snake_case_id",
-  "labelEn": "Name tourists know",
-  "label": "Hebrew script transliteration (REQUIRED)",
-  "lat": 37.9726,
-  "lng": 23.7285,
-  "radius": 800,
-  "descEn": "6-8 word tourist vibe",
-  "desc": "Hebrew translation of descEn (REQUIRED)",
+  "labelEn": "English name tourists use",
+  "label": "Hebrew transliteration (REQUIRED, never empty)",
+  "lat": 50.0865,
+  "lng": 14.4114,
+  "radius": 650,
+  "descEn": "6-8 word tourist vibe e.g. Gothic lanes, dark beer, medieval towers",
+  "desc": "Hebrew translation of descEn (REQUIRED, never empty)",
   "safety": "safe"
 }]
 
-Rules:
-- lat/lng: precise center of THAT neighborhood, 4 decimal places
-- radius: conservative walkable zone in meters — dense city centers 400-700m, larger neighborhoods 800-1500m
-- CRITICAL: areas must NOT significantly overlap. If two spots are close, merge them into one area with a slightly larger radius rather than creating two overlapping circles
-- Each area center must be the actual geographic center of THAT neighborhood, spread across the city
-- Prioritize areas tourists visit, not administrative boundaries
-- label and desc are REQUIRED in Hebrew script, never empty
+COORDINATE RULES (most important):
+- lat/lng: the REAL GPS center of that specific neighborhood — NOT the city center
+- Areas must be geographically spread: include neighborhoods north, south, east AND west of the city center
+- Verify each coordinate is distinct and in the right part of the city
+
+RADIUS RULES:
+- Dense historic center: 400-600m
+- Mixed tourist area: 600-900m
+- Large modern district or waterfront: 900-1500m
+
+OVERLAP RULE:
+- If two area circles would significantly overlap (centers closer than their combined radius), merge them or increase radius instead of creating two separate overlapping areas
+
+OTHER RULES:
+- Focus on where tourists walk, eat, explore — not administrative regions
+- label and desc are REQUIRED in Hebrew script, never leave empty
 - safety: "safe", "caution", or "danger"`;
 const GOOGLE_KEY   = 'AIzaSyCE598tSisniM66ApqRvOyOq4svTf6pLHc';
 const PLACES_URL   = 'https://places.googleapis.com/v1/places:searchText';
@@ -326,10 +334,14 @@ async function generateWithAI(areas, cityName) {
 }
 
 // Generate city areas using AI — returns area array or { error }
-async function generateAreasWithAI(cityName, country) {
+async function generateAreasWithAI(cityName, country, cityLat, cityLng) {
+  const centerLine = (cityLat && cityLng)
+    ? 'The city center is at approximately ' + cityLat.toFixed(4) + ', ' + cityLng.toFixed(4) + '. Use this as a reference — area coordinates must be in the correct direction from this point.\n'
+    : '';
   const prompt = AREAS_PROMPT
     .replace('{cityName}', cityName)
-    .replace('{country}', country ? ' (' + country + ')' : '');
+    .replace('{country}', country ? ' (' + country + ')' : '')
+    .replace('{cityCenter}', centerLine);
   const result = await callAI(prompt, 3000);
   if (!result || result.error) return result || { error: 'No response from AI' };
   try {
@@ -679,14 +691,16 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
               style={{ color:'#94a3b8', fontSize:13, background:'none', border:'none', cursor:'pointer' }}>
               Back{isDirty ? ' *' : ''}
             </button>
-            <span style={{ fontWeight:'bold', color:'#1e293b', fontSize:15, display:'flex', alignItems:'center', gap:4 }}>
-              <input value={cfgIcon} onChange={e => { setCfgIcon(e.target.value); setIsDirty(true); notify({icon:e.target.value}); }}
-                maxLength={4} title="Click to change city icon (emoji)"
-                style={{ width:28, fontSize:20, border:'1px solid transparent', borderRadius:4,
-                  textAlign:'center', fontFamily:'inherit', background:'transparent',
-                  cursor:'text', padding:0, outline:'none' }}
-                onFocus={e => e.target.style.borderColor='#6366f1'}
-                onBlur={e => e.target.style.borderColor='transparent'} />
+            <span style={{ fontWeight:'bold', color:'#1e293b', fontSize:15, display:'flex', alignItems:'center', gap:6 }}>
+              <span title="Click to change icon" style={{ position:'relative', display:'inline-flex' }}>
+                <input value={cfgIcon} onChange={e => { setCfgIcon(e.target.value); setIsDirty(true); notify({icon:e.target.value}); }}
+                  maxLength={4} title="Click to change city icon"
+                  style={{ width:36, height:32, fontSize:22, border:'1px solid #e2e8f0', borderRadius:6,
+                    textAlign:'center', fontFamily:'inherit', background:'#f8fafc',
+                    cursor:'text', padding:0, outline:'none' }}
+                  onFocus={e => { e.target.style.borderColor='#6366f1'; e.target.style.background='#eff6ff'; }}
+                  onBlur={e => { e.target.style.borderColor='#e2e8f0'; e.target.style.background='#f8fafc'; }} />
+              </span>
               {cfgNameEn || title}
             </span>
             {cfgNameHe && <span style={{ color:'#64748b', fontSize:14 }} dir="rtl">{cfgNameHe}</span>}
@@ -1016,12 +1030,9 @@ const AddCityFlow = ({ showToast, onDone }) => {
     // Step 1: try AI (gives accurate tourist areas with names + descriptions in one call)
     if (getApiKey()) {
       setGenStep('ai');
-      const aiResult = await generateAreasWithAI(foundCity.name, country);
+      const aiResult = await generateAreasWithAI(foundCity.name, country, lat, lng);
       if (Array.isArray(aiResult) && aiResult.length >= 3) {
         builtAreas = aiResult;
-        setGenStep('wrap');
-        getCityNameHebrew(foundCity.name).then(he => { if (he) setFoundCityHe(he); });
-        fetchWikiRefMap(foundCity.name).then(url => { if (url) setRefMapUrl(url); });
       } else if (aiResult?.error) {
         showToast('AI areas: ' + aiResult.error + ' — trying OpenStreetMap fallback', 'warning');
       }
@@ -1045,7 +1056,6 @@ const AddCityFlow = ({ showToast, onDone }) => {
           processed = generateCompassAreas(lat, lng);
         }
         builtAreas = processed.map(buildArea);
-        setGenStep('wrap');
         if (getApiKey()) {
           generateWithAI(builtAreas, foundCity.name).then(results => {
             if (results && !results.error) {
@@ -1054,7 +1064,6 @@ const AddCityFlow = ({ showToast, onDone }) => {
                 : a));
             }
           });
-          getCityNameHebrew(foundCity.name).then(he => { if (he) setFoundCityHe(he); });
         }
       } catch(e) {
         showToast('Area generation failed: ' + e.message, 'error');
@@ -1063,6 +1072,16 @@ const AddCityFlow = ({ showToast, onDone }) => {
       }
     }
 
+    // Step 3: translate + fetch reference map (awaited so ReviewLayout gets correct initMeta)
+    setGenStep('wrap');
+    const [he, refUrl] = await Promise.all([
+      getCityNameHebrew(foundCity.name).catch(() => ''),
+      fetchWikiRefMap(foundCity.name).catch(() => ''),
+    ]);
+
+    // All state set together so React batches into one render before showing review
+    setFoundCityHe(he || '');
+    setRefMapUrl(refUrl || '');
     setAreas(builtAreas);
     setAllCityRadius(recalcRadius(lat, lng, builtAreas));
     setSelIdx(null);
@@ -1130,12 +1149,28 @@ const AddCityFlow = ({ showToast, onDone }) => {
             <div style={{ fontSize:12, color:'#64748b', marginTop:2 }}>{foundCity.address}</div>
             <div style={{ fontSize:11, color:'#94a3b8', marginTop:2 }}>{foundCity.lat.toFixed(4)}, {foundCity.lng.toFixed(4)}</div>
 
-            <div style={{ marginTop:12 }}>
-              <div style={{ fontSize:11, fontWeight:600, color:'#64748b', marginBottom:4 }}>City icon (emoji)</div>
-              <input value={cityIcon} onChange={e=>setCityIcon(e.target.value)} maxLength={4}
-                placeholder="🏙️"
-                style={{ width:60, padding:'6px', border:'1px solid #e2e8f0', borderRadius:8,
-                  fontSize:20, textAlign:'center', fontFamily:'inherit' }} />
+            <div style={{ marginTop:14, padding:'12px', background:'white', borderRadius:8, border:'1px solid #d1fae5' }}>
+              <div style={{ fontSize:11, fontWeight:700, color:'#374151', marginBottom:8, textTransform:'uppercase', letterSpacing:0.5 }}>City Icon</div>
+              <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
+                <div style={{ fontSize:36, width:52, height:52, display:'flex', alignItems:'center', justifyContent:'center',
+                  border:'2px solid #6366f1', borderRadius:10, background:'#eff6ff' }}>
+                  {cityIcon || '🏙️'}
+                </div>
+                <input value={cityIcon} onChange={e=>setCityIcon(e.target.value)} maxLength={4}
+                  placeholder="type emoji..."
+                  style={{ flex:1, padding:'8px 10px', border:'1px solid #e2e8f0', borderRadius:8,
+                    fontSize:16, fontFamily:'inherit', outline:'none' }} />
+              </div>
+              <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                {['🏙️','🗼','🏰','🎭','🏖️','⛩️','🕌','🏛️','🌉','🎠','🏔️','🌆','🌅','🗽','🏯','🕍','🌃','🎪'].map(e => (
+                  <button key={e} onClick={() => setCityIcon(e)}
+                    style={{ fontSize:20, width:36, height:36, border:'2px solid ' + (cityIcon===e ? '#6366f1' : '#e2e8f0'),
+                      borderRadius:8, cursor:'pointer', background: cityIcon===e ? '#eff6ff' : 'white',
+                      display:'flex', alignItems:'center', justifyContent:'center', padding:0 }}>
+                    {e}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div style={{ display:'flex', gap:8, marginTop:14 }}>
