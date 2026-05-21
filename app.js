@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.26';
+const VERSION = '0.2.27';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -218,6 +218,32 @@ async function fetchAreaDesc(areaName, cityName) {
         // Take first sentence only
         const first = d.extract.split(/(?<=[.!?])\s/)[0] || '';
         if (first.length > 10 && first.length < 200) return first;
+      }
+    } catch(e) { continue; }
+  }
+  return '';
+}
+
+// Fetch a Wikipedia map/photo for the city's neighbourhoods (used as reference image)
+async function fetchWikiRefMap(cityName) {
+  const titles = [
+    'Neighbourhoods of ' + cityName,
+    'Neighborhoods of ' + cityName,
+    'Boroughs of ' + cityName,
+    cityName,
+  ];
+  for (const title of titles) {
+    try {
+      const r = await fetch(
+        'https://en.wikipedia.org/w/api.php?action=query&titles=' + encodeURIComponent(title) +
+        '&prop=pageimages&pithumbsize=800&piprop=thumbnail&format=json&origin=*'
+      );
+      if (!r.ok) continue;
+      const d = await r.json();
+      const pages = Object.values(d?.query?.pages || {});
+      for (const pg of pages) {
+        const url = pg?.thumbnail?.source;
+        if (url && !/flag|coat.of.arms|emblem|logo/i.test(url)) return url;
       }
     } catch(e) { continue; }
   }
@@ -653,8 +679,15 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
               style={{ color:'#94a3b8', fontSize:13, background:'none', border:'none', cursor:'pointer' }}>
               Back{isDirty ? ' *' : ''}
             </button>
-            <span style={{ fontWeight:'bold', color:'#1e293b', fontSize:15 }}>
-              {cfgIcon} {cfgNameEn || title}
+            <span style={{ fontWeight:'bold', color:'#1e293b', fontSize:15, display:'flex', alignItems:'center', gap:4 }}>
+              <input value={cfgIcon} onChange={e => { setCfgIcon(e.target.value); setIsDirty(true); notify({icon:e.target.value}); }}
+                maxLength={4} title="Click to change city icon (emoji)"
+                style={{ width:28, fontSize:20, border:'1px solid transparent', borderRadius:4,
+                  textAlign:'center', fontFamily:'inherit', background:'transparent',
+                  cursor:'text', padding:0, outline:'none' }}
+                onFocus={e => e.target.style.borderColor='#6366f1'}
+                onBlur={e => e.target.style.borderColor='transparent'} />
+              {cfgNameEn || title}
             </span>
             {cfgNameHe && <span style={{ color:'#64748b', fontSize:14 }} dir="rtl">{cfgNameHe}</span>}
             <span style={{ color:'#94a3b8', fontSize:13 }}>-- {areas.length} areas</span>
@@ -939,7 +972,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
   const [query, setQuery]         = useState('');
   const [searching, setSearching] = useState(false);
   const [foundCity, setFoundCity] = useState(null);
-  const [generating, setGenerating] = useState(false);
+  const [genStep, setGenStep] = useState(''); // '', 'ai', 'osm', 'wrap'
   const [areas, setAreas]         = useState([]);
   const [selIdx, setSelIdx]       = useState(null);
   const [cityIcon, setCityIcon]   = useState('');
@@ -976,18 +1009,18 @@ const AddCityFlow = ({ showToast, onDone }) => {
 
   const generateAreas = async () => {
     if (!foundCity) return;
-    setGenerating(true);
     const { lat, lng, viewport } = foundCity;
     const country = (foundCity.address || '').split(',').pop()?.trim() || '';
     let builtAreas = null;
 
     // Step 1: try AI (gives accurate tourist areas with names + descriptions in one call)
     if (getApiKey()) {
+      setGenStep('ai');
       const aiResult = await generateAreasWithAI(foundCity.name, country);
       if (Array.isArray(aiResult) && aiResult.length >= 3) {
         builtAreas = aiResult;
+        setGenStep('wrap');
         getCityNameHebrew(foundCity.name).then(he => { if (he) setFoundCityHe(he); });
-        // Auto-fetch a neighbourhood reference map image from Wikipedia
         fetchWikiRefMap(foundCity.name).then(url => { if (url) setRefMapUrl(url); });
       } else if (aiResult?.error) {
         showToast('AI areas: ' + aiResult.error + ' — trying OpenStreetMap fallback', 'warning');
@@ -996,6 +1029,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
 
     // Step 2: fallback to Overpass (OSM) if AI unavailable or failed
     if (!builtAreas) {
+      setGenStep('osm');
       const s = viewport?.low?.latitude  ?? lat-0.18, w = viewport?.low?.longitude  ?? lng-0.18;
       const n = viewport?.high?.latitude ?? lat+0.18, e = viewport?.high?.longitude ?? lng+0.18;
       const maxR = Math.max(viewport ? distM(s,w,n,e)/2 : 20000, 12000);
@@ -1011,7 +1045,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
           processed = generateCompassAreas(lat, lng);
         }
         builtAreas = processed.map(buildArea);
-        // Background: fill descriptions via AI
+        setGenStep('wrap');
         if (getApiKey()) {
           generateWithAI(builtAreas, foundCity.name).then(results => {
             if (results && !results.error) {
@@ -1024,7 +1058,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
         }
       } catch(e) {
         showToast('Area generation failed: ' + e.message, 'error');
-        setGenerating(false);
+        setGenStep('');
         return;
       }
     }
@@ -1033,7 +1067,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
     setAllCityRadius(recalcRadius(lat, lng, builtAreas));
     setSelIdx(null);
     setStep('review');
-    setGenerating(false);
+    setGenStep('');
   };
 
   const saveCity = async (meta) => {
@@ -1108,19 +1142,35 @@ const AddCityFlow = ({ showToast, onDone }) => {
               <button onClick={()=>setFoundCity(null)}
                 style={{ flex:1, padding:'8px', border:'1px solid #e2e8f0', borderRadius:10,
                   fontSize:13, background:'white', cursor:'pointer', color:'#475569' }}>Try again</button>
-              <button onClick={generateAreas} disabled={generating}
+              <button onClick={generateAreas} disabled={!!genStep}
                 style={{ flex:1, padding:'8px', background:'#10b981', color:'white', border:'none',
                   borderRadius:10, fontSize:13, fontWeight:'bold', cursor:'pointer',
-                  opacity:generating?0.5:1 }}>
-                {generating ? 'Generating...' : 'Correct -- Generate Areas'}
+                  opacity:genStep?0.5:1 }}>
+                {genStep === 'ai'  ? '⏳ Asking AI for areas...' :
+                 genStep === 'osm' ? '⏳ Fetching map data...' :
+                 genStep === 'wrap' ? '⏳ Finishing up...' :
+                 'Generate Areas'}
               </button>
             </div>
           </div>
         )}
-        {generating && (
-          <div style={{ textAlign:'center', padding:24, color:'#94a3b8', fontSize:13 }}>
-            <div style={{ fontSize:32, marginBottom:8 }}>🗺️</div>
-            Fetching areas from OpenStreetMap...
+        {genStep && (
+          <div style={{ textAlign:'center', padding:24, color:'#64748b', fontSize:13 }}>
+            <div style={{ fontSize:32, marginBottom:8 }}>
+              {genStep === 'ai' ? '🤖' : genStep === 'osm' ? '🗺️' : '✨'}
+            </div>
+            <div style={{ marginBottom:8 }}>
+              {genStep === 'ai'  ? 'Asking AI for tourist neighborhoods...' :
+               genStep === 'osm' ? 'Fetching map data from OpenStreetMap...' :
+               'Translating names and fetching reference map...'}
+            </div>
+            <div style={{ display:'flex', justifyContent:'center', gap:6 }}>
+              {['ai','osm','wrap'].map(s => (
+                <div key={s} style={{ width:8, height:8, borderRadius:'50%',
+                  background: s === genStep ? '#10b981' : '#e2e8f0',
+                  transition:'background 0.3s' }} />
+              ))}
+            </div>
           </div>
         )}
       </div>
