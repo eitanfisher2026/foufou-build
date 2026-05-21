@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.30';
+const VERSION = '0.2.31';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -288,6 +288,71 @@ async function generateCityIcon(cityName) {
   if (!result || result.error) return '';
   const m = (result.trim()).match(/\p{Extended_Pictographic}/u);
   return m ? m[0] : '';
+}
+
+// Compass positions (fractional x,y in the SVG canvas) for the schema renderer
+const SCHEMA_POS = {
+  center:[0.50,0.50], c:[0.50,0.50],
+  n:[0.50,0.14], north:[0.50,0.14],
+  s:[0.50,0.86], south:[0.50,0.86],
+  e:[0.83,0.50], east:[0.83,0.50],
+  w:[0.17,0.50], west:[0.17,0.50],
+  ne:[0.78,0.18], nw:[0.22,0.18],
+  se:[0.78,0.82], sw:[0.22,0.82],
+};
+const SCHEMA_COLORS = ['#e8734a','#5b9dc9','#7db87a','#c97ab8','#c9a85b','#7a8ec9','#c97a7a','#7ac9b0','#a07ac9','#b8c97a'];
+
+// Render the neighborhood schema JSON to a data: SVG URL
+function renderNeighborhoodSchemaSvg(schema, cityName) {
+  const W = 500, H = 330;
+  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').slice(0,32);
+  const blobs = schema.map((area, i) => {
+    const key = (area.pos||'center').toLowerCase().replace(/\s|-/g,'');
+    const [fx, fy] = SCHEMA_POS[key] || [0.5, 0.5];
+    const isCenter = key === 'center' || key === 'c';
+    return { cx: fx*W, cy: fy*H, rx: isCenter?84:66, ry: isCenter?48:37,
+      c: area.color || SCHEMA_COLORS[i % SCHEMA_COLORS.length],
+      name: esc(area.name||''), desc: esc(area.desc||''), isCenter };
+  });
+  const center = blobs.find(b => b.isCenter);
+  const lines = center ? blobs.filter(b => !b.isCenter).map(b =>
+    `<line x1="${center.cx|0}" y1="${center.cy|0}" x2="${b.cx|0}" y2="${b.cy|0}" stroke="#cbbfaf" stroke-width="1.5" stroke-dasharray="6,4" stroke-linecap="round"/>`
+  ).join('') : '';
+  const shapes = blobs.map(b =>
+    `<ellipse cx="${b.cx|0}" cy="${b.cy|0}" rx="${b.rx}" ry="${b.ry}" fill="${b.c}" fill-opacity="0.28" stroke="${b.c}" stroke-width="2" stroke-opacity="0.65"/>` +
+    `<text x="${b.cx|0}" y="${(b.cy-5)|0}" text-anchor="middle" font-size="${b.isCenter?13.5:11.5}" font-family="'Helvetica Neue',Arial,sans-serif" fill="${b.c}" font-weight="800">${b.name}</text>` +
+    (b.desc ? `<text x="${b.cx|0}" y="${(b.cy+11)|0}" text-anchor="middle" font-size="8.5" font-family="Arial,sans-serif" fill="#5f5a52">${b.desc}</text>` : '')
+  ).join('');
+  const title = cityName
+    ? `<text x="${W/2}" y="16" text-anchor="middle" font-size="11" font-family="'Helvetica Neue',Arial,sans-serif" fill="#8a7a6a" font-weight="700" letter-spacing="2">${esc(cityName.toUpperCase())} NEIGHBORHOODS</text>`
+    : '';
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}"><defs><radialGradient id="bg2" cx="50%" cy="55%" r="70%"><stop offset="0%" stop-color="#fdf8ef"/><stop offset="100%" stop-color="#ede5d6"/></radialGradient></defs><rect width="${W}" height="${H}" fill="url(#bg2)" rx="10"/>${title}${lines}${shapes}</svg>`;
+  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}
+
+// Ask the AI for a tourist neighborhood schema (spatial positions + descriptions)
+async function generateNeighborhoodSchema(cityName) {
+  if (!getApiKey()) return null;
+  const result = await callAI(
+    'City: ' + cityName + '\n\nCreate a tourist neighborhood reference schema.\n' +
+    'List 6-9 main tourist areas with compass position and short description.\n\n' +
+    'Return ONLY a JSON array:\n' +
+    '[{"name":"Old Town","pos":"center","color":"#e8734a","desc":"Historic core, top sights"},\n' +
+    ' {"name":"Letná","pos":"n","color":"#5b9dc9","desc":"Parks, hipster cafes"},\n' +
+    ' {"name":"Vinohrady","pos":"se","color":"#7db87a","desc":"Upscale, art nouveau"},\n' +
+    ' ...]\n\n' +
+    'pos MUST be one of: center, n, s, e, w, ne, nw, se, sw\n' +
+    'color: visually distinct, warm/cool palette\n' +
+    'desc: max 4 words, tourist-focused\n' +
+    'Focus ONLY on areas tourists visit — NOT all administrative districts.',
+    700
+  );
+  if (!result || result.error) return null;
+  try {
+    const clean = result.replace(/^```[a-z]*\n?/,'').replace(/\n?```$/,'').trim();
+    const arr = JSON.parse(clean);
+    return Array.isArray(arr) && arr.length >= 3 ? arr : null;
+  } catch(e) { return null; }
 }
 
 // Generate a data-URL SVG minimap showing area positions relative to each other
@@ -706,6 +771,8 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
   const [nightStartHour, setNightStartHour] = useState(initMeta?.nightStartHour ?? 18);
   const [distMultiplier, setDistMultiplier] = useState(initMeta?.distanceMultiplier ?? 1.05);
   const [refMapUrl,      setRefMapUrl]      = useState(initMeta?.referenceMapUrl || '');
+  const [schemaUrl,      setSchemaUrl]      = useState(initMeta?.schemaUrl || '');
+  const [genSchema,      setGenSchema]      = useState(false);
   // UI state
   const [showCfg, setShowCfg]     = useState(false);
   const [isDirty, setIsDirty]     = useState(false);
@@ -741,6 +808,15 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
     const r = Math.round(Math.max(...areas.map(a => distM(cityLat, cityLng, a.lat, a.lng) + a.radius)));
     setAllCityRadius(r); notify({ radius: r });
     setIsDirty(true);
+  };
+
+  const doGenerateSchema = async () => {
+    if (!getApiKey()) { setShowKeyPanel(true); return; }
+    setGenSchema(true);
+    const schema = await generateNeighborhoodSchema(cfgNameEn || title).catch(() => null);
+    if (schema) setSchemaUrl(renderNeighborhoodSchemaSvg(schema, cfgNameEn || title));
+    else if (showToast) showToast('Could not generate schema — check AI key', 'warning');
+    setGenSchema(false);
   };
 
   const handleBack = () => {
@@ -1009,39 +1085,44 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
                   style={{ width:60, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
               </div>
             </div>
-            {/* Row 4: Reference */}
+            {/* Row 4: Reference schema */}
             <div style={{ marginTop:8 }}>
               <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap', marginBottom:6 }}>
                 <span style={{ fontSize:11, fontWeight:700, color:'#1d4ed8', textTransform:'uppercase', letterSpacing:1, minWidth:72 }}>Reference</span>
-                <span style={{ fontSize:11, color:'#64748b' }}>Area overview (from generated areas)</span>
-                <span style={{ fontSize:10, color:'#94a3b8' }}>· click to enlarge</span>
+                <span style={{ fontSize:11, color:'#64748b' }}>AI neighborhood schema — use this to validate &amp; adjust generated areas</span>
+                <button onClick={doGenerateSchema} disabled={genSchema}
+                  style={{ padding:'3px 10px', fontSize:11, background: genSchema?'#f1f5f9':'#eff6ff',
+                    border:'1px solid #93c5fd', borderRadius:6, cursor:'pointer', color:'#2563eb',
+                    fontWeight:600, opacity: genSchema?0.6:1 }}>
+                  {genSchema ? '⏳ Generating...' : schemaUrl ? '↻ Regenerate' : '🗺️ Generate Schema'}
+                </button>
               </div>
-              {/* Area overview: always-accurate SVG generated from current areas */}
-              {areas.length >= 2 && (() => {
-                const svgUrl = makeAreaOverviewSvgUrl(areas);
-                return (
-                  <img src={svgUrl} alt="Area overview" title="Click to enlarge"
-                    onClick={() => setDialogSrc(svgUrl)}
-                    style={{ maxWidth:'100%', maxHeight:160, borderRadius:8, border:'1px solid #dbeafe',
-                      display:'block', cursor:'zoom-in', marginBottom:8 }} />
-                );
-              })()}
-              {/* Optional external reference URL */}
+              {schemaUrl ? (
+                <img src={schemaUrl} alt="Neighborhood schema" title="Click to enlarge"
+                  onClick={() => setDialogSrc(schemaUrl)}
+                  style={{ maxWidth:'100%', maxHeight:200, borderRadius:8, border:'1px solid #dbeafe',
+                    display:'block', cursor:'zoom-in', marginBottom:8 }} />
+              ) : (
+                <div style={{ fontSize:11, color:'#94a3b8', padding:'8px 0', marginBottom:8 }}>
+                  Click "Generate Schema" to create an AI reference map of the real tourist neighborhoods.
+                </div>
+              )}
+              {/* Optional external URL */}
               <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
-                <span style={{ fontSize:11, color:'#64748b', whiteSpace:'nowrap' }}>External map URL (optional):</span>
+                <span style={{ fontSize:11, color:'#94a3b8', whiteSpace:'nowrap' }}>External URL (optional):</span>
                 <input value={refMapUrl}
                   onChange={e => { setRefMapUrl(e.target.value); setIsDirty(true); notify({ refMapUrl: e.target.value }); }}
-                  placeholder="Paste Wikimedia or any district map URL"
-                  style={{ flex:1, minWidth:140, padding:'3px 7px', border:'1px solid #93c5fd', borderRadius:6, fontSize:11, outline:'none', fontFamily:'inherit' }} />
+                  placeholder="Paste any district/neighborhood map URL"
+                  style={{ flex:1, minWidth:140, padding:'3px 7px', border:'1px solid #e2e8f0', borderRadius:6, fontSize:11, outline:'none', fontFamily:'inherit' }} />
                 {refMapUrl && (
                   <a href={refMapUrl} target="_blank" rel="noreferrer"
-                    style={{ fontSize:11, color:'#2563eb', whiteSpace:'nowrap', textDecoration:'none' }}>Open ↗</a>
+                    style={{ fontSize:11, color:'#2563eb', textDecoration:'none' }}>Open ↗</a>
                 )}
               </div>
               {refMapUrl && (
                 <img src={refMapUrl} alt="External reference" title="Click to enlarge"
                   onClick={() => setDialogSrc(refMapUrl)}
-                  style={{ maxWidth:'100%', maxHeight:150, borderRadius:8, border:'1px solid #e2e8f0',
+                  style={{ maxWidth:'100%', maxHeight:140, borderRadius:8, border:'1px solid #e2e8f0',
                     display:'block', cursor:'zoom-in', marginTop:6 }}
                   onError={e => { e.target.style.display='none'; }} />
               )}
@@ -1123,6 +1204,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
   const [iconSuggesting, setIconSuggesting] = useState(false);
   const [foundCityHe, setFoundCityHe] = useState('');
   const [refMapUrl, setRefMapUrl] = useState('');
+  const [schemaUrl, setSchemaUrl] = useState('');
   const [saving, setSaving]       = useState(false);
   const [allCityRadius, setAllCityRadius] = useState(15000);
 
@@ -1211,16 +1293,15 @@ const AddCityFlow = ({ showToast, onDone }) => {
       }
     }
 
-    // Step 3: translate + fetch reference map (awaited so ReviewLayout gets correct initMeta)
+    // Step 3: translate + generate neighborhood reference schema
     setGenStep('wrap');
-    const [he, refUrl] = await Promise.all([
+    const [he, schema] = await Promise.all([
       getCityNameHebrew(foundCity.name).catch(() => ''),
-      fetchWikiRefMap(foundCity.name).catch(() => ''),
+      generateNeighborhoodSchema(foundCity.name).catch(() => null),
     ]);
 
-    // All state set together so React batches into one render before showing review
     setFoundCityHe(he || '');
-    setRefMapUrl(refUrl || '');
+    setSchemaUrl(schema ? renderNeighborhoodSchemaSvg(schema, foundCity.name) : '');
     setAreas(builtAreas);
     setAllCityRadius(recalcRadius(lat, lng, builtAreas));
     setSelIdx(null);
@@ -1357,7 +1438,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
       selIdx={selIdx} setSelIdx={setSelIdx}
       cityLat={foundCity?.lat} cityLng={foundCity?.lng}
       allCityRadius={allCityRadius}
-      initMeta={{ icon: cityIcon||'🏙️', nameEn: foundCity?.name||'', nameHe: foundCityHe, dayStartHour:7, nightStartHour:18, distanceMultiplier:1.05, referenceMapUrl: refMapUrl }}
+      initMeta={{ icon: cityIcon||'🏙️', nameEn: foundCity?.name||'', nameHe: foundCityHe, dayStartHour:7, nightStartHour:18, distanceMultiplier:1.05, referenceMapUrl: refMapUrl, schemaUrl }}
       onAIFill={async (currentAreas, setAreas) => {
         const results = await generateWithAI(currentAreas, foundCity?.name||'');
         if (results?.error) return results;
