@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.29';
+const VERSION = '0.2.30';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -288,6 +288,31 @@ async function generateCityIcon(cityName) {
   if (!result || result.error) return '';
   const m = (result.trim()).match(/\p{Extended_Pictographic}/u);
   return m ? m[0] : '';
+}
+
+// Generate a data-URL SVG minimap showing area positions relative to each other
+function makeAreaOverviewSvgUrl(areas) {
+  if (!areas || areas.length < 2) return '';
+  const W = 420, H = 280;
+  const lats = areas.map(a => a.lat), lngs = areas.map(a => a.lng);
+  const cLat = (Math.min(...lats) + Math.max(...lats)) / 2;
+  const cLng = (Math.min(...lngs) + Math.max(...lngs)) / 2;
+  const spanLat = (Math.max(...lats) - Math.min(...lats)) || 0.08;
+  const spanLng = (Math.max(...lngs) - Math.min(...lngs)) || 0.08;
+  const scale = Math.min((W * 0.80) / spanLng, (H * 0.80) / spanLat);
+  const toX = lng => W/2 + (lng - cLng) * scale;
+  const toY = lat => H/2 - (lat - cLat) * scale;
+  const esc = s => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').slice(0,24);
+  const elems = areas.map((a, i) => {
+    const x = toX(a.lng).toFixed(1), y = toY(a.lat).toFixed(1);
+    const r = Math.min(40, Math.max(9, a.radius / 111320 * scale)).toFixed(1);
+    const c = COLORS[i % COLORS.length];
+    const ty = (parseFloat(y) + parseFloat(r) + 10).toFixed(1);
+    return `<circle cx="${x}" cy="${y}" r="${r}" fill="${c}" fill-opacity="0.22" stroke="${c}" stroke-width="2"/>` +
+           `<text x="${x}" y="${ty}" text-anchor="middle" font-size="9" font-family="system-ui,sans-serif" fill="${c}" font-weight="700">${esc(a.labelEn)}</text>`;
+  });
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}"><rect width="${W}" height="${H}" fill="#eef2f7" rx="6"/>${elems.join('')}</svg>`;
+  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
 }
 
 // Unified AI call — returns text string or { error: '...' }
@@ -626,6 +651,44 @@ const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown
   );
 };
 
+// ─── Draggable reference-map dialog ──────────────────────────────────────────
+const RefMapDialog = ({ src, onClose }) => {
+  const [pos,  setPos]  = useState({ x: 80, y: 80 });
+  const [zoom, setZoom] = useState(1);
+  const onMouseDown = (e) => {
+    e.preventDefault();
+    const ox = e.clientX - pos.x, oy = e.clientY - pos.y;
+    const move = ev => setPos({ x: ev.clientX - ox, y: ev.clientY - oy });
+    const up   = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  };
+  const btnS = { padding:'2px 10px', fontSize:15, border:'1px solid #e2e8f0', borderRadius:6, cursor:'pointer', background:'white', lineHeight:1.4 };
+  return (
+    <div style={{ position:'fixed', inset:0, zIndex:9500 }} onMouseDown={e => e.target===e.currentTarget && onClose()}>
+      <div style={{ position:'absolute', top:pos.y, left:pos.x, background:'white', borderRadius:12,
+        boxShadow:'0 12px 48px rgba(0,0,0,0.32)', border:'1px solid #e2e8f0', overflow:'hidden', minWidth:340 }}>
+        {/* Drag handle / toolbar */}
+        <div onMouseDown={onMouseDown} style={{ padding:'8px 12px', background:'#f8fafc', borderBottom:'1px solid #e2e8f0',
+          cursor:'grab', userSelect:'none', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+          <span style={{ fontSize:12, color:'#475569', fontWeight:600 }}>Reference Map — drag to move</span>
+          <div style={{ display:'flex', gap:5, alignItems:'center' }}>
+            <button style={btnS} onClick={() => setZoom(z => Math.max(0.25, +(z-0.25).toFixed(2)))}>−</button>
+            <span style={{ fontSize:11, color:'#94a3b8', minWidth:36, textAlign:'center' }}>{Math.round(zoom*100)}%</span>
+            <button style={btnS} onClick={() => setZoom(z => Math.min(5, +(z+0.25).toFixed(2)))}>+</button>
+            <button style={{...btnS, borderColor:'#fecaca', background:'#fef2f2', color:'#ef4444', fontWeight:'bold'}} onClick={onClose}>✕</button>
+          </div>
+        </div>
+        {/* Image */}
+        <div style={{ overflow:'auto', maxHeight:'82vh', maxWidth:'90vw', padding:10 }}>
+          <img src={src} alt="Reference" draggable={false}
+            style={{ display:'block', width: (680*zoom) + 'px', maxWidth:'none', borderRadius:8 }} />
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ─── Shared review layout (used by AddCityFlow and CityEditor) ────────────────
 const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
   cityLat: initLat, cityLng: initLng, allCityRadius: initRadius,
@@ -646,6 +709,7 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
   // UI state
   const [showCfg, setShowCfg]     = useState(false);
   const [isDirty, setIsDirty]     = useState(false);
+  const [dialogSrc, setDialogSrc] = useState(null);
   const [aiFilling, setAiFilling]             = useState(false);
   const [mergeMode, setMergeMode]             = useState(false);
   const [mergeFirst, setMergeFirst]           = useState(null); // idx of first area to merge
@@ -945,30 +1009,43 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
                   style={{ width:60, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
               </div>
             </div>
-            {/* Row 4: Reference map */}
-            <div style={{ display:'flex', gap:12, alignItems:'center', flexWrap:'wrap', marginTop:6 }}>
-              <span style={{ fontSize:11, fontWeight:700, color:'#1d4ed8', textTransform:'uppercase', letterSpacing:1, minWidth:72 }}>Reference</span>
-              <div style={{ display:'flex', alignItems:'center', gap:6, flex:1 }}>
-                <span style={{ fontSize:12, color:'#475569', whiteSpace:'nowrap' }}>Image URL</span>
+            {/* Row 4: Reference */}
+            <div style={{ marginTop:8 }}>
+              <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap', marginBottom:6 }}>
+                <span style={{ fontSize:11, fontWeight:700, color:'#1d4ed8', textTransform:'uppercase', letterSpacing:1, minWidth:72 }}>Reference</span>
+                <span style={{ fontSize:11, color:'#64748b' }}>Area overview (from generated areas)</span>
+                <span style={{ fontSize:10, color:'#94a3b8' }}>· click to enlarge</span>
+              </div>
+              {/* Area overview: always-accurate SVG generated from current areas */}
+              {areas.length >= 2 && (() => {
+                const svgUrl = makeAreaOverviewSvgUrl(areas);
+                return (
+                  <img src={svgUrl} alt="Area overview" title="Click to enlarge"
+                    onClick={() => setDialogSrc(svgUrl)}
+                    style={{ maxWidth:'100%', maxHeight:160, borderRadius:8, border:'1px solid #dbeafe',
+                      display:'block', cursor:'zoom-in', marginBottom:8 }} />
+                );
+              })()}
+              {/* Optional external reference URL */}
+              <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
+                <span style={{ fontSize:11, color:'#64748b', whiteSpace:'nowrap' }}>External map URL (optional):</span>
                 <input value={refMapUrl}
                   onChange={e => { setRefMapUrl(e.target.value); setIsDirty(true); notify({ refMapUrl: e.target.value }); }}
-                  placeholder="Paste a direct image URL (e.g. from Wikimedia Commons)"
-                  style={{ flex:1, minWidth:160, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none', fontFamily:'inherit' }} />
+                  placeholder="Paste Wikimedia or any district map URL"
+                  style={{ flex:1, minWidth:140, padding:'3px 7px', border:'1px solid #93c5fd', borderRadius:6, fontSize:11, outline:'none', fontFamily:'inherit' }} />
                 {refMapUrl && (
                   <a href={refMapUrl} target="_blank" rel="noreferrer"
-                    style={{ fontSize:11, color:'#2563eb', whiteSpace:'nowrap', textDecoration:'none' }}>
-                    Open ↗
-                  </a>
+                    style={{ fontSize:11, color:'#2563eb', whiteSpace:'nowrap', textDecoration:'none' }}>Open ↗</a>
                 )}
               </div>
-            </div>
-            {refMapUrl && (
-              <div style={{ marginTop:8 }}>
-                <img src={refMapUrl} alt="Reference map"
-                  style={{ maxWidth:'100%', maxHeight:200, borderRadius:8, border:'1px solid #e2e8f0', display:'block' }}
+              {refMapUrl && (
+                <img src={refMapUrl} alt="External reference" title="Click to enlarge"
+                  onClick={() => setDialogSrc(refMapUrl)}
+                  style={{ maxWidth:'100%', maxHeight:150, borderRadius:8, border:'1px solid #e2e8f0',
+                    display:'block', cursor:'zoom-in', marginTop:6 }}
                   onError={e => { e.target.style.display='none'; }} />
-              </div>
-            )}
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -1028,6 +1105,7 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
           />
         </div>
       </div>
+      {dialogSrc && <RefMapDialog src={dialogSrc} onClose={() => setDialogSrc(null)} />}
     </div>
   );
 };
