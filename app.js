@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION      = '0.2.17';
+const VERSION      = '0.2.18';
 const CLAUDE_URL   = 'https://api.anthropic.com/v1/messages';
 const getApiKey    = () => localStorage.getItem('foufou_anthropic_key') || '';
 const DEFAULT_PROMPT = `City: {cityName}
@@ -197,27 +197,38 @@ async function generateWithAI(areas, cityName) {
   const prompt = getPrompt()
     .replace('{cityName}', cityName)
     .replace('{neighborhoods}', list);
-  try {
-    const r = await fetch(CLAUDE_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': key,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 2048,
-        messages: [{ role: 'user', content: prompt }]
-      })
-    });
-    if (!r.ok) return null;
-    const d = await r.json();
-    const text = (d.content?.[0]?.text || '').trim();
-    const arr = JSON.parse(text);
-    return Array.isArray(arr) ? arr : null;
-  } catch(e) { return null; }
+
+  // Try models in order — newest first, fall back to stable release
+  const models = ['claude-haiku-4-5-20251001', 'claude-3-5-haiku-20241022', 'claude-3-haiku-20240307'];
+  for (const model of models) {
+    try {
+      const r = await fetch(CLAUDE_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': key,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({ model, max_tokens: 2048,
+          messages: [{ role: 'user', content: prompt }] })
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        console.warn('Claude API', model, r.status, err?.error?.message || '');
+        // 400 on this model — try next
+        if (r.status === 400 || r.status === 404) continue;
+        return null; // 401/403 — key problem, stop trying
+      }
+      const d = await r.json();
+      const text = (d.content?.[0]?.text || '').trim();
+      // Strip markdown code fences if model wraps in ```json ... ```
+      const clean = text.replace(/^```[a-z]*\n?/, '').replace(/\n?```$/, '').trim();
+      const arr = JSON.parse(clean);
+      return Array.isArray(arr) ? arr : null;
+    } catch(e) { console.warn('Claude attempt failed:', model, e.message); continue; }
+  }
+  return null;
 }
 
 // Translate/transliterate a city name to Hebrew via Claude.
@@ -451,9 +462,10 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
   // UI state
   const [showCfg, setShowCfg]     = useState(false);
   const [isDirty, setIsDirty]     = useState(false);
-  const [aiFilling, setAiFilling]   = useState(false);
+  const [aiFilling, setAiFilling]       = useState(false);
   const [showKeyPanel, setShowKeyPanel] = useState(false);
   const [keyDraftLocal, setKeyDraftLocal] = useState(getApiKey());
+  const [promptDraftLocal, setPromptDraftLocal] = useState(getPrompt());
 
   const notify = (overrides) => {
     if (onCityConfigChange) onCityConfigChange({
@@ -533,7 +545,8 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
               <button onClick={async () => {
                   if (!getApiKey()) { setShowKeyPanel(true); return; }
                   setAiFilling(true);
-                  await onAIFill(areas, setAreas);
+                  const ok = await onAIFill(areas, setAreas);
+                  if (ok === false) alert('AI generation failed.\nCheck the console for details (F12).\nCommon causes: wrong API key, or model not available on your account.');
                   setIsDirty(true); setAiFilling(false);
                 }}
                 disabled={aiFilling}
@@ -576,23 +589,13 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
             </div>
             <div style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
               <span style={{ fontSize:12, fontWeight:700, color:'#92400e', minWidth:60, paddingTop:4 }}>Prompt</span>
-              <textarea
-                value={keyDraftLocal === getApiKey()
-                  ? (localStorage.getItem('foufou_local_prompt') || getPrompt())
-                  : undefined}
-                defaultValue={getPrompt()}
-                id="prompt-editor"
+              <textarea value={promptDraftLocal} onChange={e => setPromptDraftLocal(e.target.value)}
                 rows={8} spellCheck={false}
-                onChange={e => localStorage.setItem('foufou_local_prompt', e.target.value)}
                 style={{ flex:1, padding:'6px 10px', border:'1px solid #fcd34d', borderRadius:8,
                   fontSize:11, fontFamily:'monospace', outline:'none', resize:'vertical', lineHeight:1.5 }} />
             </div>
             <div style={{ display:'flex', gap:8, marginTop:8, justifyContent:'flex-end' }}>
-              <button onClick={() => {
-                  localStorage.setItem('foufou_ai_prompt', DEFAULT_PROMPT);
-                  localStorage.removeItem('foufou_local_prompt');
-                  document.getElementById('prompt-editor').value = DEFAULT_PROMPT;
-                }}
+              <button onClick={() => setPromptDraftLocal(DEFAULT_PROMPT)}
                 style={{ padding:'5px 12px', fontSize:11, background:'white', border:'1px solid #fcd34d',
                   borderRadius:8, cursor:'pointer', color:'#92400e' }}>Reset</button>
               <button onClick={() => setShowKeyPanel(false)}
@@ -600,8 +603,7 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
                   borderRadius:8, cursor:'pointer', color:'#64748b' }}>Cancel</button>
               <button onClick={() => {
                   localStorage.setItem('foufou_anthropic_key', keyDraftLocal.trim());
-                  const ta = document.getElementById('prompt-editor');
-                  if (ta) localStorage.setItem('foufou_ai_prompt', ta.value);
+                  localStorage.setItem('foufou_ai_prompt', promptDraftLocal);
                   setShowKeyPanel(false);
                 }}
                 style={{ padding:'5px 14px', background:'#d97706', color:'white', border:'none',
@@ -949,7 +951,8 @@ const AddCityFlow = ({ showToast, onDone }) => {
       initMeta={{ icon: cityIcon||'🏙️', nameEn: foundCity?.name||'', nameHe: foundCityHe, dayStartHour:7, nightStartHour:18, distanceMultiplier:1.05 }}
       onAIFill={async (currentAreas, setAreas) => {
         const results = await generateWithAI(currentAreas, foundCity?.name||'');
-        if (results) setAreas(prev => prev.map((a,i) => results[i] ? {...a, label:results[i].nameHe||a.label, descEn:results[i].descEn||a.descEn, desc:results[i].desc||a.desc} : a));
+        if (results) { setAreas(prev => prev.map((a,i) => results[i] ? {...a, label:results[i].nameHe||a.label, descEn:results[i].descEn||a.descEn, desc:results[i].desc||a.desc} : a)); return true; }
+        return false;
       }}
       onBack={() => setStep('search')}
       onSave={saveCity} saving={saving}
