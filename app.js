@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.22';
+const VERSION = '0.2.23';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -224,7 +224,7 @@ async function callAI(prompt, maxTokens) {
         const e = await r.json().catch(() => ({}));
         if (r.status !== 404) return { error: 'Gemini ' + r.status + ': ' + (e?.error?.message || 'Unknown error') };
       }
-      if (!r.ok) { const e = await r.json().catch(()=>({})); return { error: 'Gemini model "' + model + '" not found. Try gemini-pro or gemini-1.5-pro in the 🔑 settings.' }; }
+      if (!r.ok) { return { error: 'Gemini model "' + model + '" not available on your account.\nOpen 🔑, try one of: gemini-1.5-pro, gemini-1.0-pro, gemini-pro' }; }
       const d = await r.json();
       return (d.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
     }
@@ -293,16 +293,35 @@ function buildArea(a, i) {
   };
 }
 
-// Toast
+// Toast -- errors stay open until manually closed; others auto-dismiss after 3.5s
 const Toast = ({ msg, type, onDone }) => {
-  useEffect(() => { const t = setTimeout(onDone, 3500); return () => clearTimeout(t); }, []);
+  const isError = type === 'error';
+  useEffect(() => {
+    if (isError) return; // no auto-dismiss for errors
+    const t = setTimeout(onDone, 3500);
+    return () => clearTimeout(t);
+  }, []);
   const bg = { success:'#16a34a', error:'#dc2626', info:'#2563eb', warning:'#d97706' };
+  const copy = () => navigator.clipboard?.writeText(msg).catch(() => {});
   return (
     <div style={{ position:'fixed', bottom:24, left:'50%', transform:'translateX(-50%)',
-      background: bg[type]||'#1e293b', color:'white', padding:'10px 22px',
-      borderRadius:10, fontSize:14, fontWeight:'bold',
-      boxShadow:'0 4px 16px rgba(0,0,0,0.25)', zIndex:9999, whiteSpace:'nowrap'
-    }}>{msg}</div>
+      background: bg[type]||'#1e293b', color:'white', padding:'10px 16px',
+      borderRadius:10, fontSize:13, fontWeight:'bold',
+      boxShadow:'0 4px 20px rgba(0,0,0,0.35)', zIndex:9999,
+      display:'flex', alignItems:'center', gap:10, maxWidth:'80vw'
+    }}>
+      <span style={{ flex:1, wordBreak:'break-word', whiteSpace:'pre-wrap' }}>{msg}</span>
+      <button onClick={copy} title="Copy"
+        style={{ background:'rgba(255,255,255,0.2)', border:'none', borderRadius:6,
+          color:'white', cursor:'pointer', padding:'3px 7px', fontSize:13, flexShrink:0 }}>
+        ⧉
+      </button>
+      <button onClick={onDone} title="Close"
+        style={{ background:'rgba(255,255,255,0.2)', border:'none', borderRadius:6,
+          color:'white', cursor:'pointer', padding:'3px 8px', fontSize:14, fontWeight:'bold', flexShrink:0 }}>
+        ✕
+      </button>
+    </div>
   );
 };
 
