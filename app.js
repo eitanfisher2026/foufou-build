@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.33';
+const VERSION = '0.2.34';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -407,55 +407,58 @@ async function generateNeighborhoodSchema(cityName) {
   } catch(e) { return null; }
 }
 
-// Generate a territory-style SVG reference map from the actual GPS areas.
-// Each area is a radial-gradient blob (opaque core → transparent edge) so
-// overlapping blobs blend naturally — like colored territory regions on a map.
-// Labels are bold, no descriptions, sized proportional to area radius.
-function makeAreaOverviewSvgUrl(areas, cityName) {
+// Build the SVG string for the territory reference map.
+// Uses Web-Mercator scale so blob positions match MapTiler map tiles.
+// The SVG includes a <image href="MapTiler static map"> background that
+// loads only when the SVG is rendered INLINE in the DOM (not as img[src=data:]).
+function makeAreaOverviewSvg(areas, cityName) {
   if (!areas || areas.length < 2) return '';
-  const W = 600, H = 420, TITLE_H = 34, PAD = 52;
+  const W = 600, H = 420, TITLE_H = 34;
   const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').slice(0,26);
 
   const lats = areas.map(a => a.lat), lngs = areas.map(a => a.lng);
   const cLat = (Math.min(...lats)+Math.max(...lats))/2;
   const cLng = (Math.min(...lngs)+Math.max(...lngs))/2;
-  const spanLat = Math.max(Math.max(...lats)-Math.min(...lats), 0.035);
   const spanLng = Math.max(Math.max(...lngs)-Math.min(...lngs), 0.035);
-  const scale = Math.min((W-PAD*2)/spanLng, (H-TITLE_H-PAD*2)/spanLat);
 
-  const toX = lng => W/2 + (lng-cLng)*scale;
-  const toY = lat => TITLE_H + (H-TITLE_H)/2 - (lat-cLat)*scale;
+  // Zoom level: chosen so all areas fit inside the canvas with ~1.6× padding
+  const zoom = Math.min(14, Math.max(10,
+    Math.floor(Math.log2(W * 360 / (256 * spanLng * 1.6)))
+  ));
 
-  // Blob radius: geographic radius in SVG pixels, then boosted so they
-  // fill space and touch neighbours (multiplier 2.8 makes them large enough)
-  const geoR = a => Math.max(30, Math.min(95, (a.radius/111320)*scale*2.8));
+  // Web Mercator scale at this zoom (pixels per degree longitude)
+  const lngPx = 256 * Math.pow(2, zoom) / 360;
+  // Latitude scale: Mercator stretches by 1/cos(lat) vs. equirectangular
+  const latPx = lngPx / Math.cos(cLat * Math.PI / 180);
 
-  const blobs = areas.map((a,i) => ({
-    i, cx:toX(a.lng), cy:toY(a.lat), r:geoR(a),
-    c:COLORS[i%COLORS.length], name:esc(a.labelEn||'')
+  const mapH = H - TITLE_H;
+  const toX = lng => W/2 + (lng - cLng) * lngPx;
+  const toY = lat => TITLE_H + mapH/2 - (lat - cLat) * latPx;
+  const blobR = a => Math.max(28, Math.min(90, a.radius / 111320 * lngPx * 2.8));
+
+  const blobs = areas.map((a, i) => ({
+    i, cx: toX(a.lng), cy: toY(a.lat), r: blobR(a),
+    c: COLORS[i % COLORS.length], name: esc(a.labelEn || '')
   }));
 
-  // Per-blob radial gradients: vivid core fading to transparent at edge
   const defs = blobs.map(b =>
     `<radialGradient id="tbg${b.i}" cx="50%" cy="45%" r="55%">` +
     `<stop offset="0%"   stop-color="${b.c}" stop-opacity="0.88"/>` +
-    `<stop offset="60%"  stop-color="${b.c}" stop-opacity="0.58"/>` +
+    `<stop offset="58%"  stop-color="${b.c}" stop-opacity="0.58"/>` +
     `<stop offset="100%" stop-color="${b.c}" stop-opacity="0.06"/>` +
     `</radialGradient>`
   ).join('');
 
-  // Draw blobs as slightly squashed ellipses (rx > ry looks more geographic)
   const ellipses = blobs.map(b =>
     `<ellipse cx="${b.cx.toFixed(1)}" cy="${b.cy.toFixed(1)}" ` +
-    `rx="${(b.r*1.18).toFixed(1)}" ry="${(b.r*0.82).toFixed(1)}" fill="url(#tbg${b.i})"/>`
+    `rx="${(b.r*1.15).toFixed(1)}" ry="${(b.r*0.85).toFixed(1)}" fill="url(#tbg${b.i})"/>`
   ).join('');
 
-  // Labels: white semi-transparent pill → dark bold name, no description
   const labels = blobs.map(b => {
-    const fs = Math.max(9, Math.min(13, b.r * 0.28));
-    const pw = Math.max(44, b.name.length * fs * 0.6)|0;
+    const fs = Math.max(9, Math.min(13, b.r * 0.27));
+    const pw = Math.max(44, b.name.length * fs * 0.62)|0;
     return `<rect x="${(b.cx-pw/2).toFixed(0)}" y="${(b.cy-fs).toFixed(0)}" ` +
-      `width="${pw}" height="${(fs+5).toFixed(0)}" rx="4" fill="white" fill-opacity="0.78"/>` +
+      `width="${pw}" height="${(fs+5).toFixed(0)}" rx="4" fill="white" fill-opacity="0.85"/>` +
       `<text x="${b.cx.toFixed(0)}" y="${(b.cy+2).toFixed(0)}" text-anchor="middle" ` +
       `font-size="${fs.toFixed(1)}" font-family="'Helvetica Neue',Arial,sans-serif" ` +
       `fill="#18140f" font-weight="800">${b.name}</text>`;
@@ -467,14 +470,26 @@ function makeAreaOverviewSvgUrl(areas, cityName) {
       `letter-spacing="2.5">${esc(cityName.toUpperCase())} — TOURIST NEIGHBORHOODS</text>`
     : '';
 
-  const svg =
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}">` +
+  // Streets map background — positions match the blob coordinates (same Mercator scale+zoom)
+  // This loads only when the SVG is rendered inline; blocked when used as img[src=data:]
+  const mapBg = `<image href="https://api.maptiler.com/maps/streets-v2/static/` +
+    `${cLng.toFixed(4)},${cLat.toFixed(4)},${zoom}/${W}x${mapH}.png?key=${MAPTILER_KEY}" ` +
+    `x="0" y="${TITLE_H}" width="${W}" height="${mapH}" ` +
+    `preserveAspectRatio="xMidYMid slice" opacity="0.38"/>`;
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}">` +
     `<defs><radialGradient id="tbgbg" cx="50%" cy="52%" r="68%">` +
     `<stop offset="0%" stop-color="#fdf9f2"/><stop offset="100%" stop-color="#ebe3d0"/>` +
     `</radialGradient>${defs}</defs>` +
     `<rect width="${W}" height="${H}" fill="url(#tbgbg)" rx="12"/>` +
-    `${title}${ellipses}${labels}</svg>`;
+    `${title}${mapBg}${ellipses}${labels}</svg>`;
+}
 
+// data: URL version — used for img[src] previews in the cfg panel.
+// Map background won't load (browser blocks external img in data:svg) but blobs show.
+function makeAreaOverviewSvgUrl(areas, cityName) {
+  const svg = makeAreaOverviewSvg(areas, cityName);
+  if (!svg) return '';
   return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
 }
 
@@ -816,9 +831,12 @@ const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown
 
 // ─── Draggable reference-map dialog ──────────────────────────────────────────
 const RefMapDialog = ({ src, onClose }) => {
-  const [pos,  setPos]  = useState({ x: 80, y: 80 });
-  const [zoom, setZoom] = useState(1);
-  const onMouseDown = (e) => {
+  const [pos,   setPos]   = useState({ x: 60, y: 55 });
+  const [scale, setScale] = useState(1);
+
+  // Drag from ANYWHERE on the dialog (buttons/scroll area stop propagation)
+  const startDrag = (e) => {
+    if (e.button !== 0) return;
     e.preventDefault();
     const ox = e.clientX - pos.x, oy = e.clientY - pos.y;
     const move = ev => setPos({ x: ev.clientX - ox, y: ev.clientY - oy });
@@ -826,26 +844,59 @@ const RefMapDialog = ({ src, onClose }) => {
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
   };
-  const btnS = { padding:'2px 10px', fontSize:15, border:'1px solid #e2e8f0', borderRadius:6, cursor:'pointer', background:'white', lineHeight:1.4 };
+
+  // SVG data URLs rendered inline so external <image> (MapTiler map) can load
+  const isSvg = src?.startsWith('data:image/svg+xml');
+  const svgHtml = isSvg
+    ? decodeURIComponent(src.replace(/^data:image\/svg\+xml;charset=utf-8,/, ''))
+    : null;
+
+  const btnS = {
+    padding:'3px 10px', fontSize:14, border:'1px solid #e2e8f0',
+    borderRadius:6, cursor:'pointer', background:'white', lineHeight:1.5
+  };
   return (
     <div style={{ position:'fixed', inset:0, zIndex:9500, pointerEvents:'none' }}>
-      <div style={{ position:'absolute', top:pos.y, left:pos.x, background:'white', borderRadius:12, pointerEvents:'all',
-        boxShadow:'0 12px 48px rgba(0,0,0,0.32)', border:'1px solid #e2e8f0', overflow:'hidden', minWidth:340 }}>
-        {/* Drag handle / toolbar */}
-        <div onMouseDown={onMouseDown} style={{ padding:'8px 12px', background:'#f8fafc', borderBottom:'1px solid #e2e8f0',
-          cursor:'grab', userSelect:'none', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
-          <span style={{ fontSize:12, color:'#475569', fontWeight:600 }}>Reference Map — drag to move</span>
-          <div style={{ display:'flex', gap:5, alignItems:'center' }}>
-            <button style={btnS} onClick={() => setZoom(z => Math.max(0.25, +(z-0.25).toFixed(2)))}>−</button>
-            <span style={{ fontSize:11, color:'#94a3b8', minWidth:36, textAlign:'center' }}>{Math.round(zoom*100)}%</span>
-            <button style={btnS} onClick={() => setZoom(z => Math.min(5, +(z+0.25).toFixed(2)))}>+</button>
-            <button style={{...btnS, borderColor:'#fecaca', background:'#fef2f2', color:'#ef4444', fontWeight:'bold'}} onClick={onClose}>✕</button>
+      {/* Always-visible close — never hidden behind dialog content */}
+      <button onClick={onClose}
+        style={{ position:'fixed', top:10, right:14, zIndex:9999, pointerEvents:'all',
+          width:34, height:34, borderRadius:'50%', border:'none', background:'#ef4444',
+          color:'white', fontSize:17, fontWeight:'bold', cursor:'pointer',
+          boxShadow:'0 2px 10px rgba(0,0,0,0.4)', display:'flex', alignItems:'center', justifyContent:'center' }}>
+        ✕
+      </button>
+
+      {/* Dialog — drag from anywhere except buttons and scroll area */}
+      <div onMouseDown={startDrag}
+        style={{ position:'absolute', top:pos.y, left:pos.x, pointerEvents:'all',
+          background:'white', borderRadius:12, cursor:'grab',
+          boxShadow:'0 12px 48px rgba(0,0,0,0.32)', border:'1px solid #e2e8f0',
+          overflow:'hidden', minWidth:340, maxWidth:'92vw' }}>
+
+        {/* Toolbar */}
+        <div style={{ padding:'7px 12px', background:'#f8fafc', borderBottom:'1px solid #e2e8f0',
+          userSelect:'none', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+          <span style={{ fontSize:12, color:'#475569', fontWeight:600 }}>Reference — drag anywhere to move</span>
+          <div style={{ display:'flex', gap:5, alignItems:'center' }} onMouseDown={e => e.stopPropagation()}>
+            <button style={btnS} onClick={() => setScale(s => Math.max(0.25, +(s-0.25).toFixed(2)))}>−</button>
+            <span style={{ fontSize:11, color:'#94a3b8', minWidth:36, textAlign:'center' }}>{Math.round(scale*100)}%</span>
+            <button style={btnS} onClick={() => setScale(s => Math.min(5, +(s+0.25).toFixed(2)))}>+</button>
+            <button style={{...btnS, borderColor:'#fecaca', background:'#fef2f2', color:'#ef4444', fontWeight:'bold'}}
+              onClick={onClose}>✕</button>
           </div>
         </div>
-        {/* Image */}
-        <div style={{ overflow:'auto', maxHeight:'82vh', maxWidth:'90vw', padding:10 }}>
-          <img src={src} alt="Reference" draggable={false}
-            style={{ display:'block', width: (680*zoom) + 'px', maxWidth:'none', borderRadius:8 }} />
+
+        {/* Content — stopPropagation so scroll doesn't trigger drag */}
+        <div style={{ overflow:'auto', maxHeight:'82vh', padding:10, cursor:'default' }}
+          onMouseDown={e => e.stopPropagation()}>
+          {isSvg ? (
+            // Inline SVG: external <image> elements (MapTiler map) can load
+            <div style={{ width:(680*scale)+'px', maxWidth:'none' }}
+              dangerouslySetInnerHTML={{ __html: svgHtml }} />
+          ) : (
+            <img src={src} draggable={false} alt="Reference"
+              style={{ display:'block', width:(680*scale)+'px', maxWidth:'none', borderRadius:8 }} />
+          )}
         </div>
       </div>
     </div>
