@@ -17,11 +17,18 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION      = '0.2.21';
-// Gemini API -- free tier (1500 req/day), no credit card. Key from aistudio.google.com
+const VERSION = '0.2.22';
+
+// AI provider configuration
+const AI_PROVIDERS = {
+  gemini:    { name: 'Google Gemini', defaultModel: 'gemini-1.5-flash',         keyHint: 'AIza...',    keyUrl: 'https://aistudio.google.com/apikey',                free: true  },
+  openai:    { name: 'OpenAI / ChatGPT', defaultModel: 'gpt-4o-mini',           keyHint: 'sk-...',     keyUrl: 'https://platform.openai.com/api-keys',              free: false },
+  anthropic: { name: 'Anthropic Claude', defaultModel: 'claude-3-haiku-20240307', keyHint: 'sk-ant-...', keyUrl: 'https://console.anthropic.com/settings/keys',   free: false },
+};
+const getProvider  = () => localStorage.getItem('foufou_ai_provider') || 'gemini';
+const getApiKey    = (p) => localStorage.getItem('foufou_ai_key_' + (p||getProvider())) || '';
+const getModel     = (p) => localStorage.getItem('foufou_ai_model_' + (p||getProvider())) || AI_PROVIDERS[p||getProvider()]?.defaultModel || '';
 const GEMINI_BASE  = 'https://generativelanguage.googleapis.com';
-const GEMINI_MODELS = ['v1/models/gemini-1.5-flash', 'v1beta/models/gemini-1.5-flash', 'v1beta/models/gemini-pro'];
-const getApiKey    = () => localStorage.getItem('foufou_ai_key') || '';
 const DEFAULT_PROMPT = `City: {cityName}
 
 You are building a tourist travel app. For EVERY neighborhood below you MUST fill all 3 fields.
@@ -190,54 +197,86 @@ async function fetchAreaDesc(areaName, cityName) {
   return '';
 }
 
-// Call Claude Haiku to generate tourist descriptions + Hebrew for all areas in one batch.
-// Returns array of {nameHe, descEn, desc} or null if no key / error.
-async function callGemini(key, prompt, maxTokens) {
-  for (const model of GEMINI_MODELS) {
-    const url = GEMINI_BASE + '/' + model + ':generateContent?key=' + key;
-    try {
-      const r = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.7, maxOutputTokens: maxTokens || 2048 }
-        })
-      });
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({}));
-        console.warn('Gemini', model, r.status, err?.error?.message || '');
-        continue;
+// Unified AI call — returns text string or { error: '...' }
+async function callAI(prompt, maxTokens) {
+  const provider = getProvider();
+  const key = getApiKey(provider);
+  const model = getModel(provider);
+  if (!key) return { error: 'No API key set for ' + AI_PROVIDERS[provider].name + '. Click 🔑 to add one.' };
+
+  try {
+    let r, body;
+
+    if (provider === 'gemini') {
+      // Try v1 then v1beta
+      const urls = [
+        GEMINI_BASE + '/v1/models/' + model + ':generateContent?key=' + key,
+        GEMINI_BASE + '/v1beta/models/' + model + ':generateContent?key=' + key,
+      ];
+      for (const url of urls) {
+        r = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0.7, maxOutputTokens: maxTokens || 2048 } })
+        });
+        if (r.ok) break;
+        const e = await r.json().catch(() => ({}));
+        if (r.status !== 404) return { error: 'Gemini ' + r.status + ': ' + (e?.error?.message || 'Unknown error') };
       }
+      if (!r.ok) { const e = await r.json().catch(()=>({})); return { error: 'Gemini model "' + model + '" not found. Try gemini-pro or gemini-1.5-pro in the 🔑 settings.' }; }
       const d = await r.json();
       return (d.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
-    } catch(e) { console.warn('Gemini error:', model, e.message); continue; }
-  }
-  return null;
+    }
+
+    if (provider === 'openai') {
+      r = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+        body: JSON.stringify({ model, max_tokens: maxTokens || 2048, temperature: 0.7,
+          messages: [{ role: 'user', content: prompt }] })
+      });
+      if (!r.ok) { const e = await r.json().catch(()=>({})); return { error: 'OpenAI ' + r.status + ': ' + (e?.error?.message || 'Check your API key') }; }
+      const d = await r.json();
+      return (d.choices?.[0]?.message?.content || '').trim();
+    }
+
+    if (provider === 'anthropic') {
+      r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': key,
+          'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+        body: JSON.stringify({ model, max_tokens: maxTokens || 2048,
+          messages: [{ role: 'user', content: prompt }] })
+      });
+      if (!r.ok) { const e = await r.json().catch(()=>({})); return { error: 'Anthropic ' + r.status + ': ' + (e?.error?.message || 'Check your API key and credits') }; }
+      const d = await r.json();
+      return (d.content?.[0]?.text || '').trim();
+    }
+
+    return { error: 'Unknown provider: ' + provider };
+  } catch(e) { return { error: 'Network error: ' + e.message }; }
 }
 
 async function generateWithAI(areas, cityName) {
   const key = getApiKey();
-  if (!key) return null;
+  if (!key) return { error: 'No API key. Click 🔑 to add one.' };
   const list = areas.map((a, i) => i + ': ' + (a.labelEn || '')).join('\n');
-  const prompt = getPrompt()
-    .replace('{cityName}', cityName)
-    .replace('{neighborhoods}', list);
-  const text = await callGemini(key, prompt, 2048);
-  if (!text) return null;
+  const prompt = getPrompt().replace('{cityName}', cityName).replace('{neighborhoods}', list);
+  const result = await callAI(prompt, 2048);
+  if (result && result.error) return result;
   try {
-    const clean = text.replace(/^```[a-z]*\n?/,'').replace(/\n?```$/,'').trim();
+    const clean = (result||'').replace(/^```[a-z]*\n?/,'').replace(/\n?```$/,'').trim();
     const arr = JSON.parse(clean);
-    return Array.isArray(arr) ? arr : null;
-  } catch(e) { console.warn('JSON parse failed:', e.message, text.slice(0,200)); return null; }
+    return Array.isArray(arr) ? arr : { error: 'AI returned unexpected format. Try again.' };
+  } catch(e) { return { error: 'Could not parse AI response. Try adjusting the prompt.' }; }
 }
 
-// Translate/transliterate a city name to Hebrew via Claude.
 async function getCityNameHebrew(cityName) {
   const key = getApiKey();
   if (!key) return '';
-  const text = await callGemini(key, 'Translate/transliterate the city name "' + cityName + '" to Hebrew. Return only the Hebrew text, nothing else.', 20);
-  return text || '';
+  const result = await callAI('Translate/transliterate the city name "' + cityName + '" to Hebrew. Return only the Hebrew text, nothing else.', 20);
+  return (result && !result.error) ? result : '';
 }
 
 function buildArea(a, i) {
@@ -429,7 +468,7 @@ const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown
 // ─── Shared review layout (used by AddCityFlow and CityEditor) ────────────────
 const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
   cityLat: initLat, cityLng: initLng, allCityRadius: initRadius,
-  initMeta, onBack, onSave, saving, extraButton, onCityConfigChange, onAIFill }) => {
+  initMeta, onBack, onSave, saving, extraButton, onCityConfigChange, onAIFill, showToast }) => {
 
   // Geo config
   const [cityLat, setCityLat]           = useState(initLat || 30);
@@ -446,10 +485,18 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
   // UI state
   const [showCfg, setShowCfg]     = useState(false);
   const [isDirty, setIsDirty]     = useState(false);
-  const [aiFilling, setAiFilling]       = useState(false);
-  const [showKeyPanel, setShowKeyPanel] = useState(false);
-  const [keyDraftLocal, setKeyDraftLocal] = useState(getApiKey());
+  const [aiFilling, setAiFilling]             = useState(false);
+  const [showKeyPanel, setShowKeyPanel]       = useState(false);
+  const [providerDraft, setProviderDraft]     = useState(getProvider());
+  const [keyDraftLocal, setKeyDraftLocal]     = useState(() => getApiKey(getProvider()));
+  const [modelDraftLocal, setModelDraftLocal] = useState(() => getModel(getProvider()));
   const [promptDraftLocal, setPromptDraftLocal] = useState(getPrompt());
+
+  const switchProviderDraft = (p) => {
+    setProviderDraft(p);
+    setKeyDraftLocal(getApiKey(p));
+    setModelDraftLocal(getModel(p));
+  };
 
   const notify = (overrides) => {
     if (onCityConfigChange) onCityConfigChange({
@@ -529,8 +576,11 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
               <button onClick={async () => {
                   if (!getApiKey()) { setShowKeyPanel(true); return; }
                   setAiFilling(true);
-                  const ok = await onAIFill(areas, setAreas);
-                  if (ok === false) alert('AI generation failed.\nCheck the console for details (F12).\nCommon causes: wrong API key, or model not available on your account.');
+                  const result = await onAIFill(areas, setAreas);
+                  if (result && result.error) {
+                    if (showToast) showToast('AI error: ' + result.error, 'error');
+                    else alert(result.error);
+                  }
                   setIsDirty(true); setAiFilling(false);
                 }}
                 disabled={aiFilling}
@@ -559,36 +609,58 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
           </div>
         </div>
 
-        {/* API key panel */}
+        {/* AI settings panel */}
         {showKeyPanel && (
           <div style={{ padding:'12px 16px', background:'#fefce8', borderTop:'1px solid #fde68a' }}>
-            <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10, flexWrap:'wrap' }}>
-              <span style={{ fontSize:12, fontWeight:700, color:'#92400e', minWidth:60 }}>🔑 API Key</span>
-              <input value={keyDraftLocal} onChange={e => setKeyDraftLocal(e.target.value)}
-                type="password" placeholder="AIza... (Google Gemini key from aistudio.google.com)"
-                style={{ flex:1, minWidth:200, padding:'5px 10px', border:'1px solid #fcd34d',
-                  borderRadius:8, fontSize:12, fontFamily:'monospace', outline:'none' }} />
-              <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer"
-                style={{ fontSize:11, color:'#92400e', whiteSpace:'nowrap' }}>Get free key ↗</a>
+            {/* Provider tabs */}
+            <div style={{ display:'flex', gap:6, marginBottom:12 }}>
+              {Object.entries(AI_PROVIDERS).map(([id, p]) => (
+                <button key={id} onClick={() => switchProviderDraft(id)}
+                  style={{ padding:'4px 12px', fontSize:12, fontWeight:600, borderRadius:20,
+                    border: '1px solid ' + (providerDraft===id ? '#d97706' : '#e2e8f0'),
+                    background: providerDraft===id ? '#fef3c7' : 'white',
+                    color: providerDraft===id ? '#92400e' : '#64748b', cursor:'pointer' }}>
+                  {p.name} {getApiKey(id) ? '✓' : ''} {p.free ? '(free)' : ''}
+                </button>
+              ))}
             </div>
-            <div style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
-              <span style={{ fontSize:12, fontWeight:700, color:'#92400e', minWidth:60, paddingTop:4 }}>Prompt</span>
+            {/* Key + model row */}
+            <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10, flexWrap:'wrap' }}>
+              <span style={{ fontSize:12, fontWeight:600, color:'#92400e', minWidth:34 }}>Key</span>
+              <input value={keyDraftLocal} onChange={e => setKeyDraftLocal(e.target.value)} type="password"
+                placeholder={AI_PROVIDERS[providerDraft].keyHint}
+                style={{ flex:2, minWidth:180, padding:'5px 10px', border:'1px solid #fcd34d',
+                  borderRadius:8, fontSize:12, fontFamily:'monospace', outline:'none' }} />
+              <span style={{ fontSize:12, fontWeight:600, color:'#92400e' }}>Model</span>
+              <input value={modelDraftLocal} onChange={e => setModelDraftLocal(e.target.value)}
+                style={{ flex:1, minWidth:120, padding:'5px 10px', border:'1px solid #fcd34d',
+                  borderRadius:8, fontSize:12, fontFamily:'monospace', outline:'none' }} />
+              <a href={AI_PROVIDERS[providerDraft].keyUrl} target="_blank" rel="noreferrer"
+                style={{ fontSize:11, color:'#92400e', whiteSpace:'nowrap' }}>Get key ↗</a>
+            </div>
+            {/* Prompt */}
+            <div style={{ display:'flex', alignItems:'flex-start', gap:8 }}>
+              <span style={{ fontSize:12, fontWeight:600, color:'#92400e', minWidth:46, paddingTop:4 }}>Prompt</span>
               <textarea value={promptDraftLocal} onChange={e => setPromptDraftLocal(e.target.value)}
-                rows={8} spellCheck={false}
+                rows={7} spellCheck={false}
                 style={{ flex:1, padding:'6px 10px', border:'1px solid #fcd34d', borderRadius:8,
                   fontSize:11, fontFamily:'monospace', outline:'none', resize:'vertical', lineHeight:1.5 }} />
             </div>
+            {/* Buttons */}
             <div style={{ display:'flex', gap:8, marginTop:8, justifyContent:'flex-end' }}>
               <button onClick={() => setPromptDraftLocal(DEFAULT_PROMPT)}
                 style={{ padding:'5px 12px', fontSize:11, background:'white', border:'1px solid #fcd34d',
-                  borderRadius:8, cursor:'pointer', color:'#92400e' }}>Reset</button>
+                  borderRadius:8, cursor:'pointer', color:'#92400e' }}>Reset prompt</button>
               <button onClick={() => setShowKeyPanel(false)}
                 style={{ padding:'5px 12px', fontSize:11, background:'white', border:'1px solid #e2e8f0',
                   borderRadius:8, cursor:'pointer', color:'#64748b' }}>Cancel</button>
               <button onClick={() => {
-                  localStorage.setItem('foufou_ai_key', keyDraftLocal.trim());
+                  localStorage.setItem('foufou_ai_provider', providerDraft);
+                  localStorage.setItem('foufou_ai_key_' + providerDraft, keyDraftLocal.trim());
+                  localStorage.setItem('foufou_ai_model_' + providerDraft, modelDraftLocal.trim());
                   localStorage.setItem('foufou_ai_prompt', promptDraftLocal);
                   setShowKeyPanel(false);
+                  if (showToast) showToast('AI settings saved (' + AI_PROVIDERS[providerDraft].name + ')', 'success');
                 }}
                 style={{ padding:'5px 14px', background:'#d97706', color:'white', border:'none',
                   borderRadius:8, fontSize:12, fontWeight:'bold', cursor:'pointer' }}>Save</button>
@@ -935,9 +1007,11 @@ const AddCityFlow = ({ showToast, onDone }) => {
       initMeta={{ icon: cityIcon||'🏙️', nameEn: foundCity?.name||'', nameHe: foundCityHe, dayStartHour:7, nightStartHour:18, distanceMultiplier:1.05 }}
       onAIFill={async (currentAreas, setAreas) => {
         const results = await generateWithAI(currentAreas, foundCity?.name||'');
-        if (results) { setAreas(prev => prev.map((a,i) => results[i] ? {...a, label:results[i].nameHe||a.label, descEn:results[i].descEn||a.descEn, desc:results[i].desc||a.desc} : a)); return true; }
-        return false;
+        if (results?.error) return results;
+        if (Array.isArray(results)) { setAreas(prev => prev.map((a,i) => results[i] ? {...a, label:results[i].nameHe||a.label, descEn:results[i].descEn||a.descEn, desc:results[i].desc||a.desc} : a)); return null; }
+        return { error: 'No results returned' };
       }}
+      showToast={showToast}
       onBack={() => setStep('search')}
       onSave={saveCity} saving={saving}
     />
@@ -1045,10 +1119,11 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
       extraButton={deleteBtn}
       onAIFill={async (currentAreas, setAreasFn) => {
         const results = await generateWithAI(currentAreas, regEntry.nameEn);
-        if (results) setAreasFn(prev => prev.map((a,i) => results[i]
-          ? { ...a, label: results[i].nameHe||a.label, descEn: results[i].descEn||a.descEn, desc: results[i].desc||a.desc }
-          : a));
+        if (results?.error) return results;
+        if (Array.isArray(results)) { setAreasFn(prev => prev.map((a,i) => results[i] ? {...a, label:results[i].nameHe||a.label, descEn:results[i].descEn||a.descEn, desc:results[i].desc||a.desc} : a)); return null; }
+        return { error: 'No results returned' };
       }}
+      showToast={showToast}
     />
   );
 };
@@ -1144,14 +1219,19 @@ const FouFouBuild = () => {
   const [view, setView]               = useState('cities');
   const [editingCity, setEditingCity] = useState(null);
   const [toast, setToast]             = useState(null);
-  const [showKeyInput, setShowKeyInput]   = useState(false);
-  const [keyDraft, setKeyDraft]           = useState(getApiKey());
-  const [promptDraft, setPromptDraft]     = useState(getPrompt());
+  const [showKeyInput, setShowKeyInput]       = useState(false);
+  const [headerProvider, setHeaderProvider]   = useState(getProvider());
+  const [keyDraft, setKeyDraft]               = useState(() => getApiKey(getProvider()));
+  const [modelDraft, setModelDraft]           = useState(() => getModel(getProvider()));
+  const [promptDraft, setPromptDraft]         = useState(getPrompt());
+  const switchHeaderProvider = (p) => { setHeaderProvider(p); setKeyDraft(getApiKey(p)); setModelDraft(getModel(p)); };
   const saveAiSettings = () => {
-    localStorage.setItem('foufou_ai_key', keyDraft.trim());
+    localStorage.setItem('foufou_ai_provider', headerProvider);
+    localStorage.setItem('foufou_ai_key_' + headerProvider, keyDraft.trim());
+    localStorage.setItem('foufou_ai_model_' + headerProvider, modelDraft.trim());
     localStorage.setItem('foufou_ai_prompt', promptDraft);
     setShowKeyInput(false);
-    showToast('AI settings saved', 'success');
+    showToast('AI settings saved (' + AI_PROVIDERS[headerProvider].name + ')', 'success');
   };
 
   const showToast = (msg, type) => setToast({ msg, type:type||'info', key:Date.now() });
@@ -1235,23 +1315,43 @@ const FouFouBuild = () => {
           {/* AI settings panel */}
           {showKeyInput && (
             <div style={{ background:'#fefce8', borderBottom:'1px solid #fde68a', padding:'12px 24px' }}>
-              <div style={{ maxWidth:800, margin:'0 auto', display:'flex', flexDirection:'column', gap:10 }}>
-                <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                  <span style={{ fontSize:12, fontWeight:700, color:'#92400e', minWidth:80 }}>API Key</span>
-                  <input value={keyDraft} onChange={e => setKeyDraft(e.target.value)}
-                    type="password" placeholder="AIza... (Google Gemini key from aistudio.google.com)"
-                    style={{ flex:1, padding:'6px 10px', border:'1px solid #fcd34d', borderRadius:8,
-                      fontSize:12, outline:'none', fontFamily:'monospace', background:'white' }} />
+              <div style={{ maxWidth:900, margin:'0 auto', display:'flex', flexDirection:'column', gap:10 }}>
+                {/* Provider tabs */}
+                <div style={{ display:'flex', gap:6 }}>
+                  {Object.entries(AI_PROVIDERS).map(([id, p]) => (
+                    <button key={id} onClick={() => switchHeaderProvider(id)}
+                      style={{ padding:'4px 14px', fontSize:12, fontWeight:600, borderRadius:20,
+                        border:'1px solid ' + (headerProvider===id ? '#d97706' : '#e2e8f0'),
+                        background: headerProvider===id ? '#fef3c7' : 'white',
+                        color: headerProvider===id ? '#92400e' : '#64748b', cursor:'pointer' }}>
+                      {p.name} {getApiKey(id) ? '✓' : ''} {p.free ? '(free)':''}
+                    </button>
+                  ))}
                 </div>
-                <div style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
-                  <span style={{ fontSize:12, fontWeight:700, color:'#92400e', minWidth:80, paddingTop:4 }}>Prompt</span>
+                {/* Key + model */}
+                <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+                  <span style={{ fontSize:12, fontWeight:700, color:'#92400e', minWidth:30 }}>Key</span>
+                  <input value={keyDraft} onChange={e => setKeyDraft(e.target.value)} type="password"
+                    placeholder={AI_PROVIDERS[headerProvider].keyHint}
+                    style={{ flex:2, minWidth:200, padding:'6px 10px', border:'1px solid #fcd34d',
+                      borderRadius:8, fontSize:12, fontFamily:'monospace', outline:'none', background:'white' }} />
+                  <span style={{ fontSize:12, fontWeight:700, color:'#92400e' }}>Model</span>
+                  <input value={modelDraft} onChange={e => setModelDraft(e.target.value)}
+                    style={{ flex:1, minWidth:140, padding:'6px 10px', border:'1px solid #fcd34d',
+                      borderRadius:8, fontSize:12, fontFamily:'monospace', outline:'none', background:'white' }} />
+                  <a href={AI_PROVIDERS[headerProvider].keyUrl} target="_blank" rel="noreferrer"
+                    style={{ fontSize:11, color:'#92400e', whiteSpace:'nowrap' }}>Get key ↗</a>
+                </div>
+                {/* Prompt */}
+                <div style={{ display:'flex', alignItems:'flex-start', gap:8 }}>
+                  <span style={{ fontSize:12, fontWeight:700, color:'#92400e', minWidth:50, paddingTop:4 }}>Prompt</span>
                   <textarea value={promptDraft} onChange={e => setPromptDraft(e.target.value)}
-                    rows={10} spellCheck={false}
+                    rows={9} spellCheck={false}
                     style={{ flex:1, padding:'8px 10px', border:'1px solid #fcd34d', borderRadius:8,
                       fontSize:12, fontFamily:'monospace', outline:'none', resize:'vertical', lineHeight:1.5 }} />
                 </div>
                 <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
-                  <button onClick={() => { setPromptDraft(DEFAULT_PROMPT); }}
+                  <button onClick={() => setPromptDraft(DEFAULT_PROMPT)}
                     style={{ padding:'6px 14px', fontSize:12, background:'white', border:'1px solid #fcd34d',
                       borderRadius:8, cursor:'pointer', color:'#92400e' }}>Reset prompt</button>
                   <button onClick={() => setShowKeyInput(false)}
