@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.25';
+const VERSION = '0.2.26';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -71,7 +71,9 @@ Return ONLY a JSON array, no other text:
 
 Rules:
 - lat/lng: precise center of THAT neighborhood, 4 decimal places
-- radius: walkable tourist zone in meters (typically 400-2000m)
+- radius: conservative walkable zone in meters — dense city centers 400-700m, larger neighborhoods 800-1500m
+- CRITICAL: areas must NOT significantly overlap. If two spots are close, merge them into one area with a slightly larger radius rather than creating two overlapping circles
+- Each area center must be the actual geographic center of THAT neighborhood, spread across the city
 - Prioritize areas tourists visit, not administrative boundaries
 - label and desc are REQUIRED in Hebrew script, never empty
 - safety: "safe", "caution", or "danger"`;
@@ -560,6 +562,8 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
   const [showCfg, setShowCfg]     = useState(false);
   const [isDirty, setIsDirty]     = useState(false);
   const [aiFilling, setAiFilling]             = useState(false);
+  const [mergeMode, setMergeMode]             = useState(false);
+  const [mergeFirst, setMergeFirst]           = useState(null); // idx of first area to merge
   const [showKeyPanel, setShowKeyPanel]       = useState(false);
   const [providerDraft, setProviderDraft]     = useState(getProvider());
   const [keyDraftLocal, setKeyDraftLocal]     = useState(() => getApiKey(getProvider()));
@@ -599,6 +603,30 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
 
   const updateArea = (idx, updated) => { setAreas(prev => prev.map((a,i) => i===idx ? updated : a)); setIsDirty(true); };
   const deleteArea = (idx) => { setAreas(prev => prev.filter((_,i) => i!==idx)); setSelIdx(null); setIsDirty(true); };
+
+  const mergeAreas = (i1, i2) => {
+    const a = areas[i1], b = areas[i2];
+    const merged = {
+      id: toId(a.labelEn + '_' + b.labelEn),
+      labelEn: a.labelEn + ' / ' + b.labelEn,
+      label: (a.label || '') + ' / ' + (b.label || ''),
+      lat: roundCoord((a.lat + b.lat) / 2),
+      lng: roundCoord((a.lng + b.lng) / 2),
+      radius: Math.round(Math.max(a.radius, b.radius) * 1.2 / 100) * 100,
+      descEn: a.descEn || b.descEn,
+      desc: a.desc || b.desc,
+      size: 'large', safety: a.safety === 'danger' || b.safety === 'danger' ? 'danger' : a.safety === 'caution' || b.safety === 'caution' ? 'caution' : 'safe'
+    };
+    setAreas(prev => prev.filter((_,i) => i !== i1 && i !== i2).concat([merged]));
+    setSelIdx(null); setMergeMode(false); setMergeFirst(null); setIsDirty(true);
+  };
+
+  const handleAreaClick = (i) => {
+    if (!mergeMode) { setSelIdx(i); return; }
+    if (mergeFirst === null) { setMergeFirst(i); return; }
+    if (mergeFirst === i) { setMergeFirst(null); return; }
+    mergeAreas(mergeFirst, i);
+  };
   const moveArea   = (idx, dir) => {
     const next = idx + dir;
     if (next < 0 || next >= areas.length) return;
@@ -673,6 +701,13 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
             <button onClick={addArea}
               style={{ padding:'6px 10px', fontSize:12, background:'#f1f5f9', border:'none',
                 borderRadius:8, cursor:'pointer', fontWeight:600, color:'#475569' }}>+ Area</button>
+            <button onClick={() => { setMergeMode(v => !v); setMergeFirst(null); setSelIdx(null); }}
+              style={{ padding:'6px 10px', fontSize:12, border:'1px solid #e2e8f0',
+                borderRadius:8, cursor:'pointer', fontWeight:600,
+                background: mergeMode ? '#fef3c7' : '#f8fafc',
+                color: mergeMode ? '#d97706' : '#475569' }}>
+              {mergeMode ? (mergeFirst !== null ? '⬡ click 2nd area' : '⬡ click 1st area') : '⬡ Merge'}
+            </button>
             <button onClick={() => { onSave({ cityLat, cityLng, allCityRadius, cfgIcon, cfgNameEn, cfgNameHe, dayStartHour, nightStartHour, distMultiplier, refMapUrl }); setIsDirty(false); }}
               disabled={saving || !areas.length}
               style={{ padding:'6px 14px', fontSize:13, background:'#10b981', color:'white',
@@ -845,11 +880,14 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
         {/* Area list */}
         <div style={{ width:176, flexShrink:0, borderRight:'1px solid #e2e8f0',
           overflowY:'auto', background:'#f8fafc' }}>
-          {areas.map((area, i) => (
-            <div key={i} onClick={() => setSelIdx(i)}
+          {areas.map((area, i) => {
+            const isMerge1 = mergeMode && mergeFirst === i;
+            const isSelected = !mergeMode && selIdx === i;
+            return (
+            <div key={i} onClick={() => handleAreaClick(i)}
               style={{ padding:'10px 12px', borderBottom:'1px solid #f1f5f9', cursor:'pointer',
-                background: selIdx===i ? 'white' : 'transparent',
-                borderLeft: selIdx===i ? '4px solid #6366f1' : '4px solid transparent' }}>
+                background: isMerge1 ? '#fef3c7' : isSelected ? 'white' : 'transparent',
+                borderLeft: isMerge1 ? '4px solid #d97706' : isSelected ? '4px solid #6366f1' : '4px solid transparent' }}>
               <div style={{ display:'flex', alignItems:'center', gap:6 }}>
                 <span style={{ width:20, height:20, borderRadius:'50%', background:COLORS[i%COLORS.length],
                   color:'white', fontSize:10, display:'flex', alignItems:'center', justifyContent:'center',
@@ -868,7 +906,8 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
                 </div>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
 
         {/* Map -- takes remaining space, AreaMap fills it via height:100% */}
@@ -905,6 +944,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
   const [selIdx, setSelIdx]       = useState(null);
   const [cityIcon, setCityIcon]   = useState('');
   const [foundCityHe, setFoundCityHe] = useState('');
+  const [refMapUrl, setRefMapUrl] = useState('');
   const [saving, setSaving]       = useState(false);
   const [allCityRadius, setAllCityRadius] = useState(15000);
 
@@ -947,6 +987,8 @@ const AddCityFlow = ({ showToast, onDone }) => {
       if (Array.isArray(aiResult) && aiResult.length >= 3) {
         builtAreas = aiResult;
         getCityNameHebrew(foundCity.name).then(he => { if (he) setFoundCityHe(he); });
+        // Auto-fetch a neighbourhood reference map image from Wikipedia
+        fetchWikiRefMap(foundCity.name).then(url => { if (url) setRefMapUrl(url); });
       } else if (aiResult?.error) {
         showToast('AI areas: ' + aiResult.error + ' — trying OpenStreetMap fallback', 'warning');
       }
@@ -1092,7 +1134,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
       selIdx={selIdx} setSelIdx={setSelIdx}
       cityLat={foundCity?.lat} cityLng={foundCity?.lng}
       allCityRadius={allCityRadius}
-      initMeta={{ icon: cityIcon||'🏙️', nameEn: foundCity?.name||'', nameHe: foundCityHe, dayStartHour:7, nightStartHour:18, distanceMultiplier:1.05 }}
+      initMeta={{ icon: cityIcon||'🏙️', nameEn: foundCity?.name||'', nameHe: foundCityHe, dayStartHour:7, nightStartHour:18, distanceMultiplier:1.05, referenceMapUrl: refMapUrl }}
       onAIFill={async (currentAreas, setAreas) => {
         const results = await generateWithAI(currentAreas, foundCity?.name||'');
         if (results?.error) return results;
@@ -1304,7 +1346,7 @@ const CityList = ({ onAddCity, onEditCity }) => {
     db.ref('settings/cityRegistry/' + key + '/active').set(next).catch(() => reload());
   };
 
-  const sorted = Object.entries(cities).sort((a,b) => (a[1].order||0)-(b[1].order||0));
+  const sorted = Object.entries(cities).sort((a,b) => (a[1].nameEn||'').localeCompare(b[1].nameEn||''));
 
   return (
     <div style={{ maxWidth:640, margin:'0 auto', padding:24 }}>
