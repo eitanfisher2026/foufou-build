@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION      = '0.2.12';
+const VERSION      = '0.2.13';
 const GOOGLE_KEY   = 'AIzaSyCE598tSisniM66ApqRvOyOq4svTf6pLHc';
 const PLACES_URL   = 'https://places.googleapis.com/v1/places:searchText';
 const OVERPASS_ENDPOINTS = [
@@ -144,6 +144,25 @@ function generateCompassAreas(cityLat, cityLng) {
     make('northwest', 'North West',  cityLat+dLat, cityLng-dLng),
     make('southeast', 'South East',  cityLat-dLat, cityLng+dLng),
   ];
+}
+
+// Fetch a one-sentence tourist description from Wikipedia for an area name + city
+async function fetchAreaDesc(areaName, cityName) {
+  const titles = [areaName + ', ' + cityName, areaName];
+  for (const t of titles) {
+    try {
+      const r = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(t),
+        { headers: { 'Api-User-Agent': 'FouFou-Build/1.0' } });
+      if (!r.ok) continue;
+      const d = await r.json();
+      if (d.extract && d.type !== 'disambiguation') {
+        // Take first sentence only
+        const first = d.extract.split(/(?<=[.!?])\s/)[0] || '';
+        if (first.length > 10 && first.length < 200) return first;
+      }
+    } catch(e) { continue; }
+  }
+  return '';
 }
 
 function buildArea(a, i) {
@@ -274,11 +293,11 @@ const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown
           borderRadius:8, fontSize:13, outline:'none', fontFamily:'inherit' }} />
     </div>
   );
-  const txt = (label, key, dir) => (
+  const txt = (label, key, dir, ph) => (
     <div style={{ marginBottom:10 }}>
       <div style={{ fontSize:11, fontWeight:600, color:'#64748b', marginBottom:4 }}>{label}</div>
       <input value={area[key]||''} onChange={e => onChange({...area,[key]:e.target.value})}
-        placeholder="One sentence..." dir={dir||'ltr'}
+        placeholder={ph||''} dir={dir||'ltr'}
         style={{ width:'100%', boxSizing:'border-box', padding:'6px 10px', border:'1px solid #e2e8f0',
           borderRadius:8, fontSize:13, outline:'none', fontFamily:'inherit' }} />
     </div>
@@ -303,10 +322,10 @@ const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown
         </div>
       </div>
 
-      {inp('Name (English)', 'labelEn', 'e.g. Old Town')}
-      {inp('Name (Hebrew)', 'label', '', 'rtl')}
-      {txt('Description (English)', 'descEn')}
-      {txt('Description (Hebrew)', 'desc', 'rtl')}
+      {inp('Name (English)', 'labelEn', 'e.g. Old Town, Chinatown, Riverside')}
+      {inp('Name (Hebrew)', 'label', 'שם האזור בעברית', 'rtl')}
+      {txt('Description (English)', 'descEn', 'ltr', 'e.g. Historic temples, street food, night markets')}
+      {txt('Description (Hebrew)', 'desc', 'rtl', 'תאר בקצרה: אתרים, אווירה, מה לראות')}
 
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:10 }}>
         <div>
@@ -655,6 +674,15 @@ const AddCityFlow = ({ showToast, onDone }) => {
       setAllCityRadius(recalcRadius(lat, lng, builtAreas));
       setSelIdx(null);
       setStep('review');
+      // Background: fetch English descriptions from Wikipedia for each area
+      const cityName = foundCity.name;
+      Promise.all(builtAreas.map((area, i) =>
+        area.descEn ? Promise.resolve(null) : fetchAreaDesc(area.labelEn, cityName)
+      )).then(descs => {
+        setAreas(prev => prev.map((a, i) =>
+          descs[i] ? { ...a, descEn: descs[i] } : a
+        ));
+      });
     } catch(e) { showToast('Area generation failed: '+e.message, 'error'); }
     setGenerating(false);
   };
