@@ -17,29 +17,28 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION      = '0.2.9';
+const VERSION      = '0.2.6';
 const GOOGLE_KEY   = 'AIzaSyCE598tSisniM66ApqRvOyOq4svTf6pLHc';
 const PLACES_URL   = 'https://places.googleapis.com/v1/places:searchText';
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
 ];
-// MapTiler streets-v2-en: forces English labels globally (streets-v2 uses local language)
-const MAPTILER_KEY = 'Uvu44hp7joiCfp72GhTj';
-const MAP_TILES    = 'https://api.maptiler.com/maps/streets-v2-en/256/{z}/{x}/{y}.png?key=' + MAPTILER_KEY;
-const MAP_ATTR     = '&copy; <a href="https://www.maptiler.com/">MapTiler</a> &copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>';
+// CartoDB Positron -- free, no API key, no domain restriction
+const MAP_TILES    = 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
+const MAP_ATTR     = '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>';
 const COLORS = ['#4a90d9','#e8a838','#d95555','#3bba7e','#d97eb5','#7c7ce0','#9b7ed9','#2eb8c9','#e08540','#b36dd9','#38b3a0','#c93d5a'];
 
 const HE_WORDS = {
-  'old city': '׳”׳¢׳™׳¨ ׳”׳¢׳×׳™׳§׳”', 'old town': '׳”׳¢׳™׳¨ ׳”׳¢׳×׳™׳§׳”',
-  'city center': '׳׳¨׳›׳– ׳”׳¢׳™׳¨', 'city centre': '׳׳¨׳›׳– ׳”׳¢׳™׳¨', 'downtown': '׳׳¨׳›׳– ׳”׳¢׳™׳¨', 'center': '׳׳¨׳›׳–',
-  'northeast': '׳¦׳₪׳•׳ ׳׳–׳¨׳—', 'northwest': '׳¦׳₪׳•׳ ׳׳¢׳¨׳‘',
-  'southeast': '׳“׳¨׳•׳ ׳׳–׳¨׳—', 'southwest': '׳“׳¨׳•׳ ׳׳¢׳¨׳‘',
-  'north': '׳¦׳₪׳•׳', 'south': '׳“׳¨׳•׳', 'east': '׳׳–׳¨׳—', 'west': '׳׳¢׳¨׳‘',
-  'port': '׳ ׳׳', 'harbor': '׳ ׳׳', 'harbour': '׳ ׳׳',
-  'beach': '׳—׳•׳£', 'riverside': '׳’׳“׳× ׳”׳ ׳”׳¨', 'waterfront': '׳׳•׳ ׳”׳׳™׳',
-  'market': '׳©׳•׳§', 'park': '׳₪׳׳¨׳§', 'chinatown': "׳¦'׳™׳™׳ ׳” ׳˜׳׳•׳",
-  'uptown': '׳׳₪׳˜׳׳•׳', 'midtown': '׳׳™׳“׳˜׳׳•׳',
+  'old city': 'העיר העתיקה', 'old town': 'העיר העתיקה',
+  'city center': 'מרכז העיר', 'city centre': 'מרכז העיר', 'downtown': 'מרכז העיר', 'center': 'מרכז',
+  'northeast': 'צפון מזרח', 'northwest': 'צפון מערב',
+  'southeast': 'דרום מזרח', 'southwest': 'דרום מערב',
+  'north': 'צפון', 'south': 'דרום', 'east': 'מזרח', 'west': 'מערב',
+  'port': 'נמל', 'harbor': 'נמל', 'harbour': 'נמל',
+  'beach': 'חוף', 'riverside': 'גדת הנהר', 'waterfront': 'מול המים',
+  'market': 'שוק', 'park': 'פארק', 'chinatown': "צ'יינה טאון",
+  'uptown': 'אפטאון', 'midtown': 'מידטאון',
 };
 
 // Sort by key length so "northeast" matches before "north"
@@ -72,58 +71,21 @@ function isLatinScript(str) {
   return true;
 }
 
-// Search Wikipedia for a neighbourhood/district map image for the city.
-// Returns a direct image URL or empty string.
-async function fetchWikiRefMap(cityName) {
-  const queries = [
-    cityName + ' neighbourhoods',
-    cityName + ' neighborhoods map',
-    cityName + ' districts',
-  ];
-  for (const q of queries) {
-    try {
-      // Step 1: search Wikipedia for the article
-      const searchUrl = 'https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch='
-        + encodeURIComponent(q) + '&format=json&origin=*&srlimit=3';
-      const sr = await fetch(searchUrl);
-      if (!sr.ok) continue;
-      const sd = await sr.json();
-      const title = sd.query?.search?.[0]?.title;
-      if (!title) continue;
-      // Step 2: get the main image of that article
-      const imgUrl = 'https://en.wikipedia.org/w/api.php?action=query&titles='
-        + encodeURIComponent(title)
-        + '&prop=pageimages&piprop=original|thumbnail&pithumbsize=900&format=json&origin=*';
-      const ir = await fetch(imgUrl);
-      if (!ir.ok) continue;
-      const id = await ir.json();
-      const page = Object.values(id.query?.pages || {})[0];
-      const src = page?.original?.source || page?.thumbnail?.source;
-      if (src) return src;
-    } catch(e) { continue; }
-  }
-  return '';
-}
-
-// Try each Overpass endpoint with 8s timeout; return parsed JSON or null.
-// Uses AbortController (broad browser support) not AbortSignal.timeout().
+// Try each Overpass endpoint in order; return parsed JSON or null
 async function fetchOverpass(query) {
   for (const endpoint of OVERPASS_ENDPOINTS) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 8000);
     try {
       const resp = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: 'data=' + encodeURIComponent(query),
-        signal: ctrl.signal
+        signal: AbortSignal.timeout(20000)
       });
-      clearTimeout(timer);
       if (!resp.ok) continue;
       const text = await resp.text();
-      if (text.trimStart().startsWith('<')) continue;
+      if (text.trimStart().startsWith('<')) continue; // XML error / HTML page
       return JSON.parse(text);
-    } catch(e) { clearTimeout(timer); continue; }
+    } catch(e) { continue; }
   }
   return null;
 }
@@ -210,7 +172,7 @@ const Toast = ({ msg, type, onDone }) => {
   );
 };
 
-// ג”€ג”€ג”€ Leaflet Map ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€
+// ─── Leaflet Map ──────────────────────────────────────────────────────────────
 // Key fixes:
 //   1. Map initialised with explicit center+zoom so flyTo never crashes on uninitialised map.
 //   2. cityLat/cityLng stored in refs so the init effect closure always has current values.
@@ -293,7 +255,7 @@ const AreaMap = ({ areas, selectedIdx, cityLat, cityLng, allCityRadius, onSelect
   return <div ref={divRef} style={{ width:'100%', height:'100%' }} />;
 };
 
-// ג”€ג”€ג”€ Area Editor Panel ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€
+// ─── Area Editor Panel ────────────────────────────────────────────────────────
 const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown }) => {
   if (!area) return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center',
@@ -369,7 +331,7 @@ const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown
   );
 };
 
-// ג”€ג”€ג”€ Shared review layout (used by AddCityFlow and CityEditor) ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€
+// ─── Shared review layout (used by AddCityFlow and CityEditor) ────────────────
 const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
   cityLat: initLat, cityLng: initLng, allCityRadius: initRadius,
   initMeta, onBack, onSave, saving, extraButton, onCityConfigChange }) => {
@@ -379,47 +341,21 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
   const [cityLng, setCityLng]           = useState(initLng || 20);
   const [allCityRadius, setAllCityRadius] = useState(initRadius || 15000);
   // City metadata
-  const [cfgIcon,        setCfgIcon]        = useState(initMeta?.icon || 'נ™ן¸');
+  const [cfgIcon,        setCfgIcon]        = useState(initMeta?.icon || '🏙️');
   const [cfgNameEn,      setCfgNameEn]      = useState(initMeta?.nameEn || '');
   const [cfgNameHe,      setCfgNameHe]      = useState(initMeta?.nameHe || '');
   const [dayStartHour,   setDayStartHour]   = useState(initMeta?.dayStartHour ?? 7);
   const [nightStartHour, setNightStartHour] = useState(initMeta?.nightStartHour ?? 18);
   const [distMultiplier, setDistMultiplier] = useState(initMeta?.distanceMultiplier ?? 1.05);
-  const [refMapUrl, setRefMapUrl] = useState(initMeta?.referenceMapUrl || '');
   // UI state
-  const [showCfg, setShowCfg]   = useState(false);
-  const [showRef, setShowRef]   = useState(false);
-  const [splitPct, setSplitPct] = useState(60); // % width for map when ref is visible
-  const [isDirty, setIsDirty]   = useState(false);
-  const bodyRef    = useRef(null);
-  const draggingRef = useRef(false);
-
-  useEffect(() => {
-    const onMove = (e) => {
-      if (!draggingRef.current || !bodyRef.current) return;
-      const rect = bodyRef.current.getBoundingClientRect();
-      const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
-      setSplitPct(Math.max(25, Math.min(80, (x / rect.width) * 100)));
-    };
-    const onUp = () => { draggingRef.current = false; };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-    window.addEventListener('touchmove', onMove);
-    window.addEventListener('touchend', onUp);
-    return () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-      window.removeEventListener('touchmove', onMove);
-      window.removeEventListener('touchend', onUp);
-    };
-  }, []);
+  const [showCfg, setShowCfg] = useState(false);
+  const [isDirty, setIsDirty] = useState(false);
 
   const notify = (overrides) => {
     if (onCityConfigChange) onCityConfigChange({
       lat: cityLat, lng: cityLng, radius: allCityRadius,
       icon: cfgIcon, nameEn: cfgNameEn, nameHe: cfgNameHe,
       dayStartHour, nightStartHour, distanceMultiplier: distMultiplier,
-      refMapUrl,
       ...overrides
     });
   };
@@ -479,17 +415,11 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
                 borderRadius:8, cursor:'pointer', color:'#475569', background:'#f8fafc' }}>
               Show All
             </button>
-            <button onClick={() => setShowRef(v => !v)}
-              style={{ padding:'6px 10px', fontSize:12, border:'1px solid #e2e8f0',
-                borderRadius:8, cursor:'pointer', fontWeight:600,
-                background: showRef ? '#fef3c7' : '#f8fafc', color: showRef ? '#d97706' : '#475569' }}>
-              נ—÷ן¸ Reference
-            </button>
             <button onClick={() => setShowCfg(v => !v)}
               style={{ padding:'6px 10px', fontSize:12, border:'1px solid #e2e8f0',
                 borderRadius:8, cursor:'pointer', fontWeight:600,
                 background: showCfg ? '#eff6ff' : '#f8fafc', color: showCfg ? '#2563eb' : '#475569' }}>
-              ג™ן¸ City
+              ⚙️ City
             </button>
             <button onClick={addArea}
               style={{ padding:'6px 10px', fontSize:12, background:'#f1f5f9', border:'none',
@@ -573,18 +503,6 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
                   style={{ width:60, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
               </div>
             </div>
-            {/* Row 4: Reference map URL */}
-            <div style={{ display:'flex', gap:12, alignItems:'center', flexWrap:'wrap', marginTop:8 }}>
-              <span style={{ fontSize:11, fontWeight:700, color:'#1d4ed8', textTransform:'uppercase', letterSpacing:1, minWidth:72 }}>Reference</span>
-              <div style={{ display:'flex', alignItems:'center', gap:6, flex:1 }}>
-                <span style={{ fontSize:12, color:'#475569', whiteSpace:'nowrap' }}>Map image URL</span>
-                <input value={refMapUrl} onChange={e => { setRefMapUrl(e.target.value); setIsDirty(true); notify({refMapUrl:e.target.value}); }}
-                  placeholder="Paste Wikipedia or any neighbourhood map image URL"
-                  style={{ flex:1, minWidth:200, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
-                {refMapUrl && <a href={refMapUrl} target="_blank" rel="noreferrer"
-                  style={{ padding:'4px 9px', fontSize:11, background:'#d97706', color:'white', borderRadius:6, textDecoration:'none', whiteSpace:'nowrap' }}>Open ג†—</a>}
-              </div>
-            </div>
           </div>
         )}
       </div>
@@ -621,62 +539,15 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
           ))}
         </div>
 
-        {/* Centre: map + optional reference side-by-side with draggable divider */}
-        <div ref={bodyRef} style={{ flex:1, display:'flex', overflow:'hidden', position:'relative' }}>
-
-          {/* Leaflet map */}
-          <div style={{ width: showRef ? splitPct+'%' : '100%', position:'relative', overflow:'hidden', transition: draggingRef.current ? 'none' : 'width 0.15s' }}>
-            <AreaMap areas={areas} selectedIdx={selIdx} cityLat={cityLat} cityLng={cityLng}
-              allCityRadius={allCityRadius} onSelect={setSelIdx} />
-          </div>
-
-          {/* Draggable divider */}
-          {showRef && (
-            <div
-              onMouseDown={e => { draggingRef.current = true; e.preventDefault(); }}
-              onTouchStart={e => { draggingRef.current = true; }}
-              style={{ width:6, flexShrink:0, background:'#e2e8f0', cursor:'col-resize',
-                display:'flex', alignItems:'center', justifyContent:'center',
-                userSelect:'none', zIndex:10 }}>
-              <div style={{ width:2, height:40, background:'#94a3b8', borderRadius:2 }} />
-            </div>
-          )}
-
-          {/* Reference image panel */}
-          {showRef && (
-            <div style={{ flex:1, overflow:'auto', background:'#fafafa', display:'flex', flexDirection:'column' }}>
-              {refMapUrl ? (
-                <div style={{ padding:8 }}>
-                  <img src={refMapUrl} alt="Reference neighbourhood map"
-                    style={{ width:'100%', display:'block', borderRadius:6, border:'1px solid #e2e8f0' }}
-                    onError={e => {
-                      e.target.style.display = 'none';
-                      document.getElementById('ref-err').style.display = 'block';
-                    }} />
-                  <div id="ref-err" style={{ display:'none', padding:12, color:'#ef4444', fontSize:12 }}>
-                    Image could not load (hotlink protection).<br/>
-                    <a href={refMapUrl} target="_blank" rel="noreferrer" style={{ color:'#6366f1' }}>Open URL in new tab ג†—</a>
-                  </div>
-                  <a href={refMapUrl} target="_blank" rel="noreferrer"
-                    style={{ display:'block', marginTop:6, fontSize:11, color:'#6366f1', textDecoration:'none', padding:'0 4px' }}>
-                    Open full size ג†—
-                  </a>
-                </div>
-              ) : (
-                <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
-                  color:'#94a3b8', fontSize:13, padding:24, textAlign:'center' }}>
-                  <div style={{ fontSize:32, marginBottom:12 }}>נ—÷ן¸</div>
-                  No reference map yet.<br/><br/>
-                  Open <strong>ג™ן¸ City</strong> ג†’ Reference<br/>
-                  and paste a direct image URL.
-                </div>
-              )}
-            </div>
-          )}
+        {/* Map -- takes remaining space, AreaMap fills it via height:100% */}
+        <div style={{ flex:1, position:'relative', overflow:'hidden' }}>
+          <AreaMap areas={areas} selectedIdx={selIdx} cityLat={cityLat} cityLng={cityLng}
+            allCityRadius={allCityRadius} onSelect={setSelIdx} />
         </div>
 
-        {/* Area editor ג€” fixed right panel */}
-        <div style={{ width:288, flexShrink:0, borderLeft:'1px solid #e2e8f0', background:'white', overflow:'hidden' }}>
+        {/* Editor */}
+        <div style={{ width:288, flexShrink:0, borderLeft:'1px solid #e2e8f0',
+          background:'white', overflow:'hidden' }}>
           <AreaEditor
             area={selIdx !== null ? areas[selIdx] : null}
             idx={selIdx} total={areas.length}
@@ -691,7 +562,7 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
   );
 };
 
-// ג”€ג”€ג”€ Add City Flow ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€
+// ─── Add City Flow ────────────────────────────────────────────────────────────
 const AddCityFlow = ({ showToast, onDone }) => {
   const [step, setStep]           = useState('search');
   const [query, setQuery]         = useState('');
@@ -703,7 +574,6 @@ const AddCityFlow = ({ showToast, onDone }) => {
   const [cityIcon, setCityIcon]   = useState('');
   const [saving, setSaving]       = useState(false);
   const [allCityRadius, setAllCityRadius] = useState(15000);
-  const [refMapUrl, setRefMapUrl] = useState('');
 
   const recalcRadius = (lat, lng, areaList) => {
     if (!areaList.length) return 15000;
@@ -756,8 +626,6 @@ const AddCityFlow = ({ showToast, onDone }) => {
       setAreas(builtAreas);
       setAllCityRadius(recalcRadius(lat, lng, builtAreas));
       setSelIdx(null);
-      // Try to find a reference neighbourhood map from Wikipedia (non-blocking)
-      fetchWikiRefMap(foundCity.name).then(url => { if (url) setRefMapUrl(url); });
       setStep('review');
     } catch(e) { showToast('Area generation failed: '+e.message, 'error'); }
     setGenerating(false);
@@ -768,7 +636,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
     setSaving(true);
     try {
       const cityId = toId(meta?.cfgNameEn || foundCity.name);
-      const icon = meta?.cfgIcon || cityIcon || 'נ™ן¸';
+      const icon = meta?.cfgIcon || cityIcon || '🏙️';
       await Promise.all([
         db.ref('cities/'+cityId+'/config').set({
           center:{ lat:roundCoord(meta?.lat || foundCity.lat), lng:roundCoord(meta?.lng || foundCity.lng) },
@@ -777,8 +645,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
           dayStartHour: meta?.dayStartHour ?? 7,
           nightStartHour: meta?.nightStartHour ?? 18,
           areas, interestToGooglePlaces:{}, textSearchInterests:{graffiti:'street art'},
-          interestTooltips:{}, systemRoutes:[],
-          referenceMapUrl: meta?.refMapUrl || refMapUrl || ''
+          interestTooltips:{}, systemRoutes:[]
         }),
         db.ref('settings/cityRegistry/'+cityId).set({
           id:cityId,
@@ -827,7 +694,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
             <div style={{ marginTop:12 }}>
               <div style={{ fontSize:11, fontWeight:600, color:'#64748b', marginBottom:4 }}>City icon (emoji)</div>
               <input value={cityIcon} onChange={e=>setCityIcon(e.target.value)} maxLength={4}
-                placeholder="נ™ן¸"
+                placeholder="🏙️"
                 style={{ width:60, padding:'6px', border:'1px solid #e2e8f0', borderRadius:8,
                   fontSize:20, textAlign:'center', fontFamily:'inherit' }} />
             </div>
@@ -847,7 +714,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
         )}
         {generating && (
           <div style={{ textAlign:'center', padding:24, color:'#94a3b8', fontSize:13 }}>
-            <div style={{ fontSize:32, marginBottom:8 }}>נ—÷ן¸</div>
+            <div style={{ fontSize:32, marginBottom:8 }}>🗺️</div>
             Fetching areas from OpenStreetMap...
           </div>
         )}
@@ -862,7 +729,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
       selIdx={selIdx} setSelIdx={setSelIdx}
       cityLat={foundCity?.lat} cityLng={foundCity?.lng}
       allCityRadius={allCityRadius}
-      initMeta={{ icon: cityIcon||'נ™ן¸', nameEn: foundCity?.name||'', nameHe: '', dayStartHour:7, nightStartHour:18, distanceMultiplier:1.05, referenceMapUrl: refMapUrl }}
+      initMeta={{ icon: cityIcon||'🏙️', nameEn: foundCity?.name||'', nameHe: '', dayStartHour:7, nightStartHour:18, distanceMultiplier:1.05 }}
       onBack={() => setStep('search')}
       onSave={saveCity} saving={saving}
     />
@@ -870,7 +737,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
   return null;
 };
 
-// ג”€ג”€ג”€ City Editor ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€
+// ─── City Editor ──────────────────────────────────────────────────────────────
 const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
   const [areas, setAreas]         = useState([]);
   const [selIdx, setSelIdx]       = useState(null);
@@ -909,7 +776,6 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
           distanceMultiplier: meta?.distMultiplier || config?.distanceMultiplier || 1.05,
           dayStartHour: meta?.dayStartHour ?? config?.dayStartHour ?? 7,
           nightStartHour: meta?.nightStartHour ?? config?.nightStartHour ?? 18,
-          referenceMapUrl: meta?.refMapUrl ?? config?.referenceMapUrl ?? '',
         }),
         db.ref('settings/cityRegistry/'+cityKey).update({
           icon: meta?.cfgIcon || regEntry.icon,
@@ -945,7 +811,7 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
     <button onClick={deleteCity}
       style={{ padding:'6px 12px', fontSize:12, background:'#fef2f2', border:'1px solid #fecaca',
         borderRadius:8, cursor:'pointer', fontWeight:600, color:'#ef4444' }}>
-      נ—‘ן¸ Delete
+      🗑️ Delete
     </button>
   );
 
@@ -957,13 +823,12 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
       cityLat={cityLat} cityLng={cityLng}
       allCityRadius={allCityRadius}
       initMeta={{
-        icon: regEntry.icon || 'נ™ן¸',
+        icon: regEntry.icon || '🏙️',
         nameEn: regEntry.nameEn || '',
         nameHe: regEntry.name || '',
         dayStartHour: config?.dayStartHour ?? 7,
         nightStartHour: config?.nightStartHour ?? 18,
         distanceMultiplier: config?.distanceMultiplier ?? 1.05,
-        referenceMapUrl: config?.referenceMapUrl || '',
       }}
       onBack={onDone}
       onSave={saveCity} saving={saving}
@@ -972,19 +837,11 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
   );
 };
 
-// ג”€ג”€ג”€ City List ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€
+// ─── City List ────────────────────────────────────────────────────────────────
 const CityList = ({ onAddCity, onEditCity }) => {
   const [cities, setCities]   = useState({});
   const [configs, setConfigs] = useState({});
   const [loading, setLoading] = useState(true);
-
-  const toggleActive = (key, city, e) => {
-    e.stopPropagation();
-    const next = !city.active;
-    db.ref('settings/cityRegistry/'+key+'/active').set(next)
-      .then(() => setCities(prev => ({...prev, [key]: {...prev[key], active: next}})))
-      .catch(() => {});
-  };
 
   const reload = () => {
     setLoading(true);
@@ -1029,17 +886,21 @@ const CityList = ({ onAddCity, onEditCity }) => {
                 transition:'border-color 0.15s' }}
               onMouseEnter={e => e.currentTarget.style.borderColor='#6366f1'}
               onMouseLeave={e => e.currentTarget.style.borderColor='#e2e8f0'}>
-              <span style={{ fontSize:28, flexShrink:0 }}>{city.icon?.startsWith?.('data:') ? 'נ™ן¸' : (city.icon||'נ™ן¸')}</span>
+              <span style={{ fontSize:28, flexShrink:0 }}>{city.icon?.startsWith?.('data:') ? '🏙️' : (city.icon||'🏙️')}</span>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontSize:14, fontWeight:'bold', color:'#1e293b' }}>{city.nameEn}</div>
                 <div style={{ fontSize:12, color:'#94a3b8', marginTop:2 }}>
-                  {city.name} ֲ· {city.country}
+                  {city.name} · {city.country}
                   {configs[city.id] != null
-                    ? <span style={{ marginLeft:8, color:'#64748b' }}>ֲ· {configs[city.id]} areas</span>
-                    : <span style={{ marginLeft:8, color:'#f59e0b' }}>ֲ· not seeded</span>}
+                    ? <span style={{ marginLeft:8, color:'#64748b' }}>· {configs[city.id]} areas</span>
+                    : <span style={{ marginLeft:8, color:'#f59e0b' }}>· not seeded</span>}
                 </div>
               </div>
-              <button onClick={e => toggleActive(key, city, e)} title="Toggle active/inactive" style={{ fontSize:11, padding:"3px 10px", borderRadius:20, fontWeight:600, flexShrink:0, border:"none", cursor:"pointer", background: city.active ? "#dcfce7" : "#f1f5f9", color: city.active ? "#16a34a" : "#64748b" }}>{city.active ? "Active" : "Inactive"}</button>
+              <span style={{ fontSize:11, padding:'2px 8px', borderRadius:20, fontWeight:600, flexShrink:0,
+                background: city.active ? '#dcfce7' : '#f1f5f9',
+                color: city.active ? '#16a34a' : '#64748b' }}>
+                {city.active ? 'Active' : 'Inactive'}
+              </span>
               <span style={{ fontSize:12, color:'#6366f1', fontWeight:600, flexShrink:0 }}>Edit →</span>
             </div>
           ))}
@@ -1049,7 +910,7 @@ const CityList = ({ onAddCity, onEditCity }) => {
   );
 };
 
-// ג”€ג”€ג”€ Main App ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€ג”€
+// ─── Main App ─────────────────────────────────────────────────────────────────
 const FouFouBuild = () => {
   const [authLoading, setAuthLoading] = useState(true);
   const [user, setUser]               = useState(null);
@@ -1078,7 +939,7 @@ const FouFouBuild = () => {
   if (authLoading) return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100vh',
       flexDirection:'column', gap:12, color:'#64748b' }}>
-      <div style={{ fontSize:48 }}>נ—ן¸</div>
+      <div style={{ fontSize:48 }}>🏗️</div>
       <div style={{ fontWeight:'bold', fontSize:20, color:'#1e293b' }}>FouFou Build</div>
       <div style={{ fontSize:13 }}>Loading...</div>
     </div>
@@ -1087,9 +948,9 @@ const FouFouBuild = () => {
   if (!user) return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100vh',
       flexDirection:'column', gap:20 }}>
-      <div style={{ fontSize:56 }}>נ—ן¸</div>
+      <div style={{ fontSize:56 }}>🏗️</div>
       <div style={{ fontSize:28, fontWeight:'bold', color:'#1e293b' }}>FouFou Build</div>
-      <div style={{ fontSize:13, color:'#94a3b8' }}>City management ֲ· Admin only</div>
+      <div style={{ fontSize:13, color:'#94a3b8' }}>City management · Admin only</div>
       <button onClick={signIn}
         style={{ marginTop:8, padding:'12px 32px', background:'#2563eb', color:'white', border:'none',
           borderRadius:12, fontSize:14, fontWeight:'bold', cursor:'pointer' }}>
@@ -1101,7 +962,7 @@ const FouFouBuild = () => {
   if (userRole < 2) return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100vh',
       flexDirection:'column', gap:16 }}>
-      <div style={{ fontSize:48 }}>נ”’</div>
+      <div style={{ fontSize:48 }}>🔒</div>
       <div style={{ fontSize:20, fontWeight:'bold', color:'#1e293b' }}>Admin access required</div>
       <div style={{ fontSize:13, color:'#94a3b8' }}>{user.email}</div>
       <button onClick={signOut} style={{ fontSize:12, color:'#94a3b8', textDecoration:'underline',
@@ -1117,10 +978,10 @@ const FouFouBuild = () => {
             display:'flex', alignItems:'center', justifyContent:'space-between',
             position:'sticky', top:0, zIndex:10, boxShadow:'0 1px 4px rgba(0,0,0,0.06)' }}>
             <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-              <span style={{ fontSize:22 }}>נ—ן¸</span>
+              <span style={{ fontSize:22 }}>🏗️</span>
               <div>
                 <div style={{ fontWeight:'bold', color:'#1e293b', fontSize:16, lineHeight:1.2 }}>FouFou Build</div>
-                <div style={{ fontSize:11, color:'#94a3b8' }}>City management ֲ· v{VERSION}</div>
+                <div style={{ fontSize:11, color:'#94a3b8' }}>City management · v{VERSION}</div>
               </div>
             </div>
             <div style={{ display:'flex', alignItems:'center', gap:12 }}>
@@ -1156,9 +1017,3 @@ const FouFouBuild = () => {
 };
 
 ReactDOM.createRoot(document.getElementById('root')).render(<FouFouBuild />);
-
-
-
-
-
-
