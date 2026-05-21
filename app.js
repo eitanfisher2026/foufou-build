@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION      = '0.2.6';
+const VERSION      = '0.2.11';
 const GOOGLE_KEY   = 'AIzaSyCE598tSisniM66ApqRvOyOq4svTf6pLHc';
 const PLACES_URL   = 'https://places.googleapis.com/v1/places:searchText';
 const OVERPASS_ENDPOINTS = [
@@ -347,6 +347,7 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
   const [dayStartHour,   setDayStartHour]   = useState(initMeta?.dayStartHour ?? 7);
   const [nightStartHour, setNightStartHour] = useState(initMeta?.nightStartHour ?? 18);
   const [distMultiplier, setDistMultiplier] = useState(initMeta?.distanceMultiplier ?? 1.05);
+  const [refMapUrl,      setRefMapUrl]      = useState(initMeta?.referenceMapUrl || '');
   // UI state
   const [showCfg, setShowCfg] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
@@ -356,6 +357,7 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
       lat: cityLat, lng: cityLng, radius: allCityRadius,
       icon: cfgIcon, nameEn: cfgNameEn, nameHe: cfgNameHe,
       dayStartHour, nightStartHour, distanceMultiplier: distMultiplier,
+      refMapUrl,
       ...overrides
     });
   };
@@ -424,7 +426,7 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
             <button onClick={addArea}
               style={{ padding:'6px 10px', fontSize:12, background:'#f1f5f9', border:'none',
                 borderRadius:8, cursor:'pointer', fontWeight:600, color:'#475569' }}>+ Area</button>
-            <button onClick={() => { onSave({ cityLat, cityLng, allCityRadius, cfgIcon, cfgNameEn, cfgNameHe, dayStartHour, nightStartHour, distMultiplier }); setIsDirty(false); }}
+            <button onClick={() => { onSave({ cityLat, cityLng, allCityRadius, cfgIcon, cfgNameEn, cfgNameHe, dayStartHour, nightStartHour, distMultiplier, refMapUrl }); setIsDirty(false); }}
               disabled={saving || !areas.length}
               style={{ padding:'6px 14px', fontSize:13, background:'#10b981', color:'white',
                 border:'none', borderRadius:8, cursor:'pointer', fontWeight:'bold',
@@ -503,6 +505,30 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
                   style={{ width:60, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
               </div>
             </div>
+            {/* Row 4: Reference map */}
+            <div style={{ display:'flex', gap:12, alignItems:'center', flexWrap:'wrap', marginTop:6 }}>
+              <span style={{ fontSize:11, fontWeight:700, color:'#1d4ed8', textTransform:'uppercase', letterSpacing:1, minWidth:72 }}>Reference</span>
+              <div style={{ display:'flex', alignItems:'center', gap:6, flex:1 }}>
+                <span style={{ fontSize:12, color:'#475569', whiteSpace:'nowrap' }}>Image URL</span>
+                <input value={refMapUrl}
+                  onChange={e => { setRefMapUrl(e.target.value); setIsDirty(true); notify({ refMapUrl: e.target.value }); }}
+                  placeholder="Paste a direct image URL (e.g. from Wikimedia Commons)"
+                  style={{ flex:1, minWidth:160, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none', fontFamily:'inherit' }} />
+                {refMapUrl && (
+                  <a href={refMapUrl} target="_blank" rel="noreferrer"
+                    style={{ fontSize:11, color:'#2563eb', whiteSpace:'nowrap', textDecoration:'none' }}>
+                    Open ↗
+                  </a>
+                )}
+              </div>
+            </div>
+            {refMapUrl && (
+              <div style={{ marginTop:8 }}>
+                <img src={refMapUrl} alt="Reference map"
+                  style={{ maxWidth:'100%', maxHeight:200, borderRadius:8, border:'1px solid #e2e8f0', display:'block' }}
+                  onError={e => { e.target.style.display='none'; }} />
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -776,6 +802,7 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
           distanceMultiplier: meta?.distMultiplier || config?.distanceMultiplier || 1.05,
           dayStartHour: meta?.dayStartHour ?? config?.dayStartHour ?? 7,
           nightStartHour: meta?.nightStartHour ?? config?.nightStartHour ?? 18,
+          referenceMapUrl: meta?.refMapUrl ?? config?.referenceMapUrl ?? '',
         }),
         db.ref('settings/cityRegistry/'+cityKey).update({
           icon: meta?.cfgIcon || regEntry.icon,
@@ -829,6 +856,7 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
         dayStartHour: config?.dayStartHour ?? 7,
         nightStartHour: config?.nightStartHour ?? 18,
         distanceMultiplier: config?.distanceMultiplier ?? 1.05,
+        referenceMapUrl: config?.referenceMapUrl || '',
       }}
       onBack={onDone}
       onSave={saveCity} saving={saving}
@@ -861,6 +889,13 @@ const CityList = ({ onAddCity, onEditCity }) => {
   };
 
   useEffect(() => { reload(); }, []);
+
+  const toggleActive = (e, key, city) => {
+    e.stopPropagation();
+    const next = !city.active;
+    setCities(prev => ({ ...prev, [key]: { ...prev[key], active: next } }));
+    db.ref('settings/cityRegistry/' + key + '/active').set(next).catch(() => reload());
+  };
 
   const sorted = Object.entries(cities).sort((a,b) => (a[1].order||0)-(b[1].order||0));
 
@@ -896,11 +931,14 @@ const CityList = ({ onAddCity, onEditCity }) => {
                     : <span style={{ marginLeft:8, color:'#f59e0b' }}>· not seeded</span>}
                 </div>
               </div>
-              <span style={{ fontSize:11, padding:'2px 8px', borderRadius:20, fontWeight:600, flexShrink:0,
-                background: city.active ? '#dcfce7' : '#f1f5f9',
-                color: city.active ? '#16a34a' : '#64748b' }}>
+              <button onClick={e => toggleActive(e, key, city)}
+                title="Click to toggle active / inactive"
+                style={{ fontSize:11, padding:'3px 10px', borderRadius:20, fontWeight:600, flexShrink:0,
+                  border:'none', cursor:'pointer',
+                  background: city.active ? '#dcfce7' : '#f1f5f9',
+                  color: city.active ? '#16a34a' : '#64748b' }}>
                 {city.active ? 'Active' : 'Inactive'}
-              </span>
+              </button>
               <span style={{ fontSize:12, color:'#6366f1', fontWeight:600, flexShrink:0 }}>Edit →</span>
             </div>
           ))}
