@@ -17,9 +17,10 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION      = '0.2.20';
+const VERSION      = '0.2.21';
 // Gemini API -- free tier (1500 req/day), no credit card. Key from aistudio.google.com
-const GEMINI_URL   = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=';
+const GEMINI_BASE  = 'https://generativelanguage.googleapis.com';
+const GEMINI_MODELS = ['v1/models/gemini-1.5-flash', 'v1beta/models/gemini-1.5-flash', 'v1beta/models/gemini-pro'];
 const getApiKey    = () => localStorage.getItem('foufou_ai_key') || '';
 const DEFAULT_PROMPT = `City: {cityName}
 
@@ -191,6 +192,30 @@ async function fetchAreaDesc(areaName, cityName) {
 
 // Call Claude Haiku to generate tourist descriptions + Hebrew for all areas in one batch.
 // Returns array of {nameHe, descEn, desc} or null if no key / error.
+async function callGemini(key, prompt, maxTokens) {
+  for (const model of GEMINI_MODELS) {
+    const url = GEMINI_BASE + '/' + model + ':generateContent?key=' + key;
+    try {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.7, maxOutputTokens: maxTokens || 2048 }
+        })
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        console.warn('Gemini', model, r.status, err?.error?.message || '');
+        continue;
+      }
+      const d = await r.json();
+      return (d.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+    } catch(e) { console.warn('Gemini error:', model, e.message); continue; }
+  }
+  return null;
+}
+
 async function generateWithAI(areas, cityName) {
   const key = getApiKey();
   if (!key) return null;
@@ -198,45 +223,21 @@ async function generateWithAI(areas, cityName) {
   const prompt = getPrompt()
     .replace('{cityName}', cityName)
     .replace('{neighborhoods}', list);
+  const text = await callGemini(key, prompt, 2048);
+  if (!text) return null;
   try {
-    const r = await fetch(GEMINI_URL + key, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.7, maxOutputTokens: 2048 }
-      })
-    });
-    if (!r.ok) {
-      const err = await r.json().catch(() => ({}));
-      console.warn('Gemini API', r.status, err?.error?.message || JSON.stringify(err));
-      return null;
-    }
-    const d = await r.json();
-    const text = (d.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
     const clean = text.replace(/^```[a-z]*\n?/,'').replace(/\n?```$/,'').trim();
     const arr = JSON.parse(clean);
     return Array.isArray(arr) ? arr : null;
-  } catch(e) { console.warn('Gemini failed:', e.message); return null; }
+  } catch(e) { console.warn('JSON parse failed:', e.message, text.slice(0,200)); return null; }
 }
 
 // Translate/transliterate a city name to Hebrew via Claude.
 async function getCityNameHebrew(cityName) {
   const key = getApiKey();
   if (!key) return '';
-  try {
-    const r = await fetch(GEMINI_URL + key, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: 'Translate/transliterate the city name "' + cityName + '" to Hebrew. Return only the Hebrew text, nothing else.' }] }],
-        generationConfig: { maxOutputTokens: 20 }
-      })
-    });
-    if (!r.ok) return '';
-    const d = await r.json();
-    return (d.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
-  } catch { return ''; }
+  const text = await callGemini(key, 'Translate/transliterate the city name "' + cityName + '" to Hebrew. Return only the Hebrew text, nothing else.', 20);
+  return text || '';
 }
 
 function buildArea(a, i) {
