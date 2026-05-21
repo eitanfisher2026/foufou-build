@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.34';
+const VERSION = '0.2.35';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -470,12 +470,30 @@ function makeAreaOverviewSvg(areas, cityName) {
       `letter-spacing="2.5">${esc(cityName.toUpperCase())} — TOURIST NEIGHBORHOODS</text>`
     : '';
 
-  // Streets map background — positions match the blob coordinates (same Mercator scale+zoom)
-  // This loads only when the SVG is rendered inline; blocked when used as img[src=data:]
-  const mapBg = `<image href="https://api.maptiler.com/maps/streets-v2/static/` +
-    `${cLng.toFixed(4)},${cLat.toFixed(4)},${zoom}/${W}x${mapH}.png?key=${MAPTILER_KEY}" ` +
-    `x="0" y="${TITLE_H}" width="${W}" height="${mapH}" ` +
-    `preserveAspectRatio="xMidYMid slice" opacity="0.38"/>`;
+  // Build a tile grid using the same MapTiler tile URL as the Leaflet map.
+  // Static-maps API returns 403 (different product), but individual tiles work fine.
+  // Fractional tile position of city center at this zoom:
+  const n = Math.pow(2, zoom);
+  const sinLat = Math.sin(cLat * Math.PI / 180);
+  const fracX = (cLng + 180) / 360 * n;
+  const fracY = (1 - Math.log((1 + sinLat) / (1 - sinLat)) / (2 * Math.PI)) / 2 * n;
+  const cTX = Math.floor(fracX), cTY = Math.floor(fracY);
+  const offX = (fracX - cTX) * 256, offY = (fracY - cTY) * 256;
+  // SVG pixel where center tile top-left goes:
+  const basePX = W/2 - offX, basePY = TITLE_H + mapH/2 - offY;
+  const tiles = [];
+  for (let dx = -2; dx <= 3; dx++) {
+    for (let dy = -2; dy <= 3; dy++) {
+      const tx = ((cTX + dx) % n + n) % n, ty = cTY + dy;
+      if (ty < 0 || ty >= n) continue;
+      const px = basePX + dx * 256, py = basePY + dy * 256;
+      if (px + 256 < 0 || px > W || py + 256 < TITLE_H || py > H) continue;
+      tiles.push(`<image href="https://api.maptiler.com/maps/streets-v2/256/${zoom}/${tx}/${ty}.png?key=${MAPTILER_KEY}" ` +
+        `x="${px.toFixed(0)}" y="${py.toFixed(0)}" width="256" height="256"/>`);
+    }
+  }
+  const mapBg = `<clipPath id="mc"><rect x="0" y="${TITLE_H}" width="${W}" height="${mapH}"/></clipPath>` +
+    `<g clip-path="url(#mc)" opacity="0.4">${tiles.join('')}</g>`;
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}">` +
     `<defs><radialGradient id="tbgbg" cx="50%" cy="52%" r="68%">` +
@@ -683,6 +701,17 @@ const AreaMap = ({ areas, selectedIdx, cityLat, cityLng, allCityRadius, onSelect
       setTimeout(() => { map.invalidateSize(); setMapReady(true); }, 150);
     });
   }, []);
+
+  // ResizeObserver: whenever the map container changes size (e.g. City panel opens/closes),
+  // tell Leaflet to recalculate tile layout so tiles fill the container again
+  useEffect(() => {
+    if (!mapReady || !divRef.current) return;
+    const obs = new ResizeObserver(() => {
+      try { mapRef.current?.invalidateSize({ animate: false, pan: false }); } catch(e) {}
+    });
+    obs.observe(divRef.current);
+    return () => obs.disconnect();
+  }, [mapReady]);
 
   // Redraw on ready / areas / selection change
   useEffect(() => {
