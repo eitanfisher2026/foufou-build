@@ -113,7 +113,6 @@ Return ONLY a JSON array:
 [{"id":"snake_case","labelEn":"Tourist name","label":"Hebrew (REQUIRED)","lat":0.0,"lng":0.0,"radius":500,"descEn":"6-8 word vibe","desc":"Hebrew translation (REQUIRED)","safety":"safe"}]
 
 RULES: lat/lng real GPS center, spread across city, no overlap, label and desc Hebrew REQUIRED.`;
-no overlap, label and desc Hebrew REQUIRED.`;
 
 const getAreasPrompt = () => localStorage.getItem('foufou_areas_prompt') || AREAS_PROMPT;
 const GOOGLE_KEY   = 'AIzaSyCE598tSisniM66ApqRvOyOq4svTf6pLHc';
