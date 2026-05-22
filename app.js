@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.35';
+const VERSION = '0.2.36';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -51,40 +51,59 @@ Neighborhoods:
 Return ONLY the JSON array. No explanation, no markdown, just the array.`;
 const getPrompt = () => localStorage.getItem('foufou_ai_prompt') || DEFAULT_PROMPT;
 
+// ─── Area generation prompts ──────────────────────────────────────────────────
+// AUTO: AI decides count and naming style based on city knowledge
 const AREAS_PROMPT = `You are a travel expert building a tourist app for {cityName}{country}.
 {cityCenter}
-List 8-10 well-known tourist neighborhoods spread across the ENTIRE city — not clustered near the center.
+Use your knowledge of {cityName} to generate the RIGHT tourist neighborhoods.
 
-Return ONLY a JSON array (no markdown, no explanation):
-[{
-  "id": "snake_case_id",
-  "labelEn": "English name tourists use",
-  "label": "Hebrew transliteration (REQUIRED, never empty)",
-  "lat": 50.0865,
-  "lng": 14.4114,
-  "radius": 650,
-  "descEn": "6-8 word tourist vibe e.g. Gothic lanes, dark beer, medieval towers",
-  "desc": "Hebrew translation of descEn (REQUIRED, never empty)",
-  "safety": "safe"
-}]
+NAMING: use the names tourists actually use — NOT administrative codes:
+- Bangkok → Sukhumvit, Silom, Chatuchak, Rattanakosin, Thonglor... (local names)
+- Paris → Montmartre, Le Marais, Saint-Germain, Bastille... (NOT "18th arrondissement")
+- Rome → Trastevere, Testaccio, Prati, Campo de' Fiori...
+- Generic cities → whatever tourists call each zone
 
-COORDINATE RULES (most important):
-- lat/lng: the REAL GPS center of that specific neighborhood — NOT the city center
-- Areas must be geographically spread: include neighborhoods north, south, east AND west of the city center
-- Verify each coordinate is distinct and in the right part of the city
+COUNT: let the city decide (not a fixed number):
+- Small focused city: 6-8 areas
+- Standard tourist city: 9-12 areas
+- Dense city with many distinct neighborhoods (Paris, Istanbul, Bangkok): 12-16 areas
 
-RADIUS RULES:
-- Dense historic center: 400-600m
-- Mixed tourist area: 600-900m
-- Large modern district or waterfront: 900-1500m
+Return ONLY a JSON array, no markdown:
+[{"id":"snake_case","labelEn":"Tourist name","label":"Hebrew (REQUIRED)","lat":0.0,"lng":0.0,"radius":700,"descEn":"6-8 word vibe","desc":"Hebrew translation (REQUIRED)","safety":"safe"}]
 
-OVERLAP RULE:
-- If two area circles would significantly overlap (centers closer than their combined radius), merge them or increase radius instead of creating two separate overlapping areas
-
-OTHER RULES:
-- Focus on where tourists walk, eat, explore — not administrative regions
-- label and desc are REQUIRED in Hebrew script, never leave empty
+RULES:
+- lat/lng: real GPS center of THAT neighborhood, 4 decimal places
+- Spread across the full city — north, south, east, west, not clustered at center
+- radius: 400-600m dense, 600-900m mixed, 900-1500m large/waterfront
+- No significant overlap — merge close areas rather than overlap
+- label and desc: Hebrew script, REQUIRED, never empty
 - safety: "safe", "caution", or "danger"`;
+
+// COMPACT: 6-8 broad zones — good for smaller or grid-layout cities
+const AREAS_PROMPT_COMPACT = `You are a travel expert building a tourist app for {cityName}{country}.
+{cityCenter}
+Generate 6-8 BROAD tourist zones — merge nearby attractions into fewer, larger areas.
+Use the names tourists actually use for each zone.
+
+Return ONLY a JSON array:
+[{"id":"snake_case","labelEn":"Tourist name","label":"Hebrew (REQUIRED)","lat":0.0,"lng":0.0,"radius":1000,"descEn":"6-8 word vibe","desc":"Hebrew translation (REQUIRED)","safety":"safe"}]
+
+RULES: lat/lng real GPS center, spread across city, radius 800-2000m (large zones),
+no overlap, label and desc Hebrew REQUIRED.`;
+
+// DETAILED: 12-18 specific areas — good for dense historic cities (Paris, Istanbul, Bangkok)
+const AREAS_PROMPT_DETAILED = `You are a travel expert building a tourist app for {cityName}{country}.
+{cityCenter}
+Generate 12-18 SPECIFIC tourist neighborhoods — split areas that have distinct characters tourists notice.
+Use the names tourists actually use, including sub-neighborhoods.
+
+Return ONLY a JSON array:
+[{"id":"snake_case","labelEn":"Tourist name","label":"Hebrew (REQUIRED)","lat":0.0,"lng":0.0,"radius":600,"descEn":"6-8 word vibe","desc":"Hebrew translation (REQUIRED)","safety":"safe"}]
+
+RULES: lat/lng real GPS center, spread across city, radius 400-800m (walkable scale),
+no overlap, label and desc Hebrew REQUIRED.`;
+
+const getAreasPrompt = () => localStorage.getItem('foufou_areas_prompt') || AREAS_PROMPT;
 const GOOGLE_KEY   = 'AIzaSyCE598tSisniM66ApqRvOyOq4svTf6pLHc';
 const PLACES_URL   = 'https://places.googleapis.com/v1/places:searchText';
 const OVERPASS_ENDPOINTS = [
@@ -290,14 +309,8 @@ async function generateCityIcon(cityName) {
   return m ? m[0] : '';
 }
 
-const SCHEMA_COLORS = ['#e8734a','#5b9dc9','#7db87a','#c97ab8','#c9a85b','#7a8ec9','#c97a7a','#7ac9b0','#a07ac9','#b8c97a'];
 
-// Render the neighborhood schema JSON to a data: SVG URL
-// Uses radial-gradient blobs that fade to transparent so overlapping areas blend
-// naturally — similar to a tourist neighborhood map with colored territories
-function renderNeighborhoodSchemaSvg(schema, cityName) {
-  const W = 580, H = 390;
-  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').slice(0,30);
+if (false) { const W = 580, H = 390; // DEAD_START
 
   // Tighter compass positions so large blobs naturally touch/overlap
   const POS = {
@@ -503,13 +516,7 @@ function makeAreaOverviewSvg(areas, cityName) {
     `${title}${mapBg}${ellipses}${labels}</svg>`;
 }
 
-// data: URL version — used for img[src] previews in the cfg panel.
-// Map background won't load (browser blocks external img in data:svg) but blobs show.
-function makeAreaOverviewSvgUrl(areas, cityName) {
-  const svg = makeAreaOverviewSvg(areas, cityName);
-  if (!svg) return '';
-  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
-}
+} // DEAD_END
 
 // Unified AI call — returns text string or { error: '...' }
 async function callAI(prompt, maxTokens) {
@@ -587,11 +594,12 @@ async function generateWithAI(areas, cityName) {
 }
 
 // Generate city areas using AI — returns area array or { error }
-async function generateAreasWithAI(cityName, country, cityLat, cityLng) {
+async function generateAreasWithAI(cityName, country, cityLat, cityLng, customPrompt) {
   const centerLine = (cityLat && cityLng)
     ? 'The city center is at approximately ' + cityLat.toFixed(4) + ', ' + cityLng.toFixed(4) + '. Use this as a reference — area coordinates must be in the correct direction from this point.\n'
     : '';
-  const prompt = AREAS_PROMPT
+  const template = customPrompt || getAreasPrompt();
+  const prompt = template
     .replace('{cityName}', cityName)
     .replace('{country}', country ? ' (' + country + ')' : '')
     .replace('{cityCenter}', centerLine);
@@ -858,8 +866,7 @@ const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown
   );
 };
 
-// ─── Draggable reference-map dialog ──────────────────────────────────────────
-const RefMapDialog = ({ src, onClose }) => {
+if (false) { const RefMapDialog = ({ src, onClose }) => { // DEAD_DIALOG_START
   const [pos,   setPos]   = useState({ x: 60, y: 55 });
   const [scale, setScale] = useState(1);
 
@@ -929,8 +936,7 @@ const RefMapDialog = ({ src, onClose }) => {
         </div>
       </div>
     </div>
-  );
-};
+  ); }; } // DEAD_DIALOG_END
 
 // ─── Shared review layout (used by AddCityFlow and CityEditor) ────────────────
 const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
@@ -948,11 +954,9 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
   const [dayStartHour,   setDayStartHour]   = useState(initMeta?.dayStartHour ?? 7);
   const [nightStartHour, setNightStartHour] = useState(initMeta?.nightStartHour ?? 18);
   const [distMultiplier, setDistMultiplier] = useState(initMeta?.distanceMultiplier ?? 1.05);
-  const [refMapUrl,      setRefMapUrl]      = useState(initMeta?.referenceMapUrl || '');
   // UI state
   const [showCfg, setShowCfg]     = useState(false);
   const [isDirty, setIsDirty]     = useState(false);
-  const [dialogSrc, setDialogSrc] = useState(null);
   const [aiFilling, setAiFilling]             = useState(false);
   const [mergeMode, setMergeMode]             = useState(false);
   const [mergeFirst, setMergeFirst]           = useState(null); // idx of first area to merge
@@ -1252,40 +1256,6 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
                   style={{ width:60, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
               </div>
             </div>
-            {/* Row 4: Reference — territory map from actual GPS areas */}
-            <div style={{ marginTop:8 }}>
-              <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:6 }}>
-                <span style={{ fontSize:11, fontWeight:700, color:'#1d4ed8', textTransform:'uppercase', letterSpacing:1, minWidth:72 }}>Reference</span>
-                <span style={{ fontSize:11, color:'#64748b' }}>Neighborhood layout — matches generated areas · click to enlarge</span>
-              </div>
-              {areas.length >= 2 && (() => {
-                const url = makeAreaOverviewSvgUrl(areas, cfgNameEn || title);
-                return (
-                  <img src={url} alt="Area territory map" title="Click to enlarge"
-                    onClick={() => setDialogSrc(url)}
-                    style={{ maxWidth:'100%', maxHeight:220, borderRadius:8, border:'1px solid #dbeafe',
-                      display:'block', cursor:'zoom-in', marginBottom:8 }} />
-                );
-              })()}
-              <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
-                <span style={{ fontSize:11, color:'#94a3b8', whiteSpace:'nowrap' }}>External URL (optional):</span>
-                <input value={refMapUrl}
-                  onChange={e => { setRefMapUrl(e.target.value); setIsDirty(true); notify({ refMapUrl: e.target.value }); }}
-                  placeholder="Paste any district/neighborhood map URL"
-                  style={{ flex:1, minWidth:140, padding:'3px 7px', border:'1px solid #e2e8f0', borderRadius:6, fontSize:11, outline:'none', fontFamily:'inherit' }} />
-                {refMapUrl && (
-                  <a href={refMapUrl} target="_blank" rel="noreferrer"
-                    style={{ fontSize:11, color:'#2563eb', textDecoration:'none' }}>Open ↗</a>
-                )}
-              </div>
-              {refMapUrl && (
-                <img src={refMapUrl} alt="External reference" title="Click to enlarge"
-                  onClick={() => setDialogSrc(refMapUrl)}
-                  style={{ maxWidth:'100%', maxHeight:140, borderRadius:8, border:'1px solid #e2e8f0',
-                    display:'block', cursor:'zoom-in', marginTop:6 }}
-                  onError={e => { e.target.style.display='none'; }} />
-              )}
-            </div>
           </div>
         )}
       </div>
@@ -1345,7 +1315,6 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
           />
         </div>
       </div>
-      {dialogSrc && <RefMapDialog src={dialogSrc} onClose={() => setDialogSrc(null)} />}
     </div>
   );
 };
@@ -1362,9 +1331,26 @@ const AddCityFlow = ({ showToast, onDone }) => {
   const [cityIcon, setCityIcon]   = useState('');
   const [iconSuggesting, setIconSuggesting] = useState(false);
   const [foundCityHe, setFoundCityHe] = useState('');
-  const [refMapUrl, setRefMapUrl] = useState('');
   const [saving, setSaving]       = useState(false);
   const [allCityRadius, setAllCityRadius] = useState(15000);
+  // AI settings for area generation (local copies, saved to localStorage on Generate)
+  const [areaProvider, setAreaProvider]   = useState(getProvider());
+  const [areaKey,      setAreaKey]        = useState(() => getApiKey(getProvider()));
+  const [areaModel,    setAreaModel]      = useState(() => getModel(getProvider()));
+  const [areaPrompt,   setAreaPrompt]     = useState(() => localStorage.getItem('foufou_areas_prompt') || AREAS_PROMPT);
+  const [promptPreset, setPromptPreset]   = useState('auto');
+  const [showPromptEd, setShowPromptEd]  = useState(false);
+
+  const switchAreaProvider = (p) => {
+    setAreaProvider(p);
+    setAreaKey(getApiKey(p));
+    setAreaModel(getModel(p));
+  };
+  const applyPreset = (key) => {
+    const map = { auto: AREAS_PROMPT, compact: AREAS_PROMPT_COMPACT, detailed: AREAS_PROMPT_DETAILED };
+    setAreaPrompt(map[key] || AREAS_PROMPT);
+    setPromptPreset(key);
+  };
 
   const recalcRadius = (lat, lng, areaList) => {
     if (!areaList.length) return 15000;
@@ -1407,9 +1393,15 @@ const AddCityFlow = ({ showToast, onDone }) => {
     let builtAreas = null;
 
     // Step 1: try AI (gives accurate tourist areas with names + descriptions in one call)
+    // Save AI settings to localStorage before running
+    localStorage.setItem('foufou_ai_provider', areaProvider);
+    localStorage.setItem('foufou_ai_key_' + areaProvider, areaKey.trim());
+    localStorage.setItem('foufou_ai_model_' + areaProvider, areaModel.trim());
+    localStorage.setItem('foufou_areas_prompt', areaPrompt);
+
     if (getApiKey()) {
       setGenStep('ai');
-      const aiResult = await generateAreasWithAI(foundCity.name, country, lat, lng);
+      const aiResult = await generateAreasWithAI(foundCity.name, country, lat, lng, areaPrompt);
       if (Array.isArray(aiResult) && aiResult.length >= 3) {
         builtAreas = aiResult;
       } else if (aiResult?.error) {
@@ -1545,7 +1537,69 @@ const AddCityFlow = ({ showToast, onDone }) => {
               </div>
             </div>
 
-            <div style={{ display:'flex', gap:8, marginTop:14 }}>
+            {/* ── AI settings: provider, key, style preset, prompt ── */}
+            <div style={{ marginTop:14, padding:'12px', background:'#fefce8', borderRadius:8, border:'1px solid #fde68a' }}>
+              <div style={{ fontSize:11, fontWeight:700, color:'#92400e', marginBottom:8, textTransform:'uppercase', letterSpacing:0.5 }}>AI for area generation</div>
+
+              {/* Provider tabs */}
+              <div style={{ display:'flex', gap:5, marginBottom:8 }}>
+                {Object.entries(AI_PROVIDERS).map(([id, p]) => (
+                  <button key={id} onClick={() => switchAreaProvider(id)}
+                    style={{ padding:'3px 10px', fontSize:11, fontWeight:600, borderRadius:16, cursor:'pointer',
+                      border:'1px solid ' + (areaProvider===id ? '#d97706' : '#e2e8f0'),
+                      background: areaProvider===id ? '#fef3c7' : 'white',
+                      color: areaProvider===id ? '#92400e' : '#64748b' }}>
+                    {p.name.split(' ')[0]} {areaKey&&areaProvider===id ? '✓' : ''}
+                  </button>
+                ))}
+              </div>
+
+              {/* Key + model */}
+              <div style={{ display:'flex', gap:6, marginBottom:8, alignItems:'center' }}>
+                <input value={areaKey} onChange={e=>setAreaKey(e.target.value)} type="password"
+                  placeholder={AI_PROVIDERS[areaProvider].keyHint}
+                  style={{ flex:2, padding:'5px 8px', border:'1px solid #fcd34d', borderRadius:6, fontSize:11, fontFamily:'monospace', outline:'none' }} />
+                <input value={areaModel} onChange={e=>setAreaModel(e.target.value)}
+                  placeholder="model"
+                  style={{ flex:1, minWidth:0, padding:'5px 8px', border:'1px solid #fcd34d', borderRadius:6, fontSize:11, fontFamily:'monospace', outline:'none' }} />
+                <a href={AI_PROVIDERS[areaProvider].keyUrl} target="_blank" rel="noreferrer"
+                  style={{ fontSize:10, color:'#92400e', whiteSpace:'nowrap' }}>Get key ↗</a>
+              </div>
+
+              {/* Style presets */}
+              <div style={{ display:'flex', gap:5, alignItems:'center', flexWrap:'wrap' }}>
+                <span style={{ fontSize:11, color:'#92400e', fontWeight:600 }}>Style:</span>
+                {[
+                  { key:'auto',     label:'Auto (recommended)' },
+                  { key:'compact',  label:'Compact 6-8' },
+                  { key:'detailed', label:'Detailed 12-18' },
+                ].map(({key, label}) => (
+                  <button key={key} onClick={() => applyPreset(key)}
+                    style={{ padding:'3px 10px', fontSize:11, borderRadius:16, cursor:'pointer', fontWeight:600,
+                      border:'1px solid ' + (promptPreset===key ? '#d97706' : '#e2e8f0'),
+                      background: promptPreset===key ? '#fef3c7' : 'white',
+                      color: promptPreset===key ? '#92400e' : '#64748b' }}>
+                    {label}
+                  </button>
+                ))}
+                <button onClick={() => setShowPromptEd(v => !v)}
+                  style={{ padding:'3px 10px', fontSize:11, borderRadius:16, cursor:'pointer',
+                    border:'1px solid #e2e8f0', background:'white', color:'#475569', marginLeft:4 }}>
+                  {showPromptEd ? '▲ prompt' : '▼ prompt'}
+                </button>
+              </div>
+
+              {showPromptEd && (
+                <textarea value={areaPrompt}
+                  onChange={e => { setAreaPrompt(e.target.value); setPromptPreset('custom'); }}
+                  rows={9} spellCheck={false}
+                  style={{ width:'100%', boxSizing:'border-box', marginTop:8, padding:'6px 8px',
+                    border:'1px solid #fcd34d', borderRadius:6, fontSize:10,
+                    fontFamily:'monospace', outline:'none', resize:'vertical', lineHeight:1.45 }} />
+              )}
+            </div>
+
+            <div style={{ display:'flex', gap:8, marginTop:12 }}>
               <button onClick={()=>setFoundCity(null)}
                 style={{ flex:1, padding:'8px', border:'1px solid #e2e8f0', borderRadius:10,
                   fontSize:13, background:'white', cursor:'pointer', color:'#475569' }}>Try again</button>
@@ -1591,7 +1645,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
       selIdx={selIdx} setSelIdx={setSelIdx}
       cityLat={foundCity?.lat} cityLng={foundCity?.lng}
       allCityRadius={allCityRadius}
-      initMeta={{ icon: cityIcon||'🏙️', nameEn: foundCity?.name||'', nameHe: foundCityHe, dayStartHour:7, nightStartHour:18, distanceMultiplier:1.05, referenceMapUrl: refMapUrl }}
+      initMeta={{ icon: cityIcon||'🏙️', nameEn: foundCity?.name||'', nameHe: foundCityHe, dayStartHour:7, nightStartHour:18, distanceMultiplier:1.05 }}
       onAIFill={async (currentAreas, setAreas) => {
         const results = await generateWithAI(currentAreas, foundCity?.name||'');
         if (results?.error) return results;
@@ -1645,7 +1699,6 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
           distanceMultiplier: meta?.distMultiplier || config?.distanceMultiplier || 1.05,
           dayStartHour: meta?.dayStartHour ?? config?.dayStartHour ?? 7,
           nightStartHour: meta?.nightStartHour ?? config?.nightStartHour ?? 18,
-          referenceMapUrl: meta?.refMapUrl ?? config?.referenceMapUrl ?? '',
         }),
         db.ref('settings/cityRegistry/'+cityKey).update({
           icon: meta?.cfgIcon || regEntry.icon,
@@ -1699,7 +1752,6 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
         dayStartHour: config?.dayStartHour ?? 7,
         nightStartHour: config?.nightStartHour ?? 18,
         distanceMultiplier: config?.distanceMultiplier ?? 1.05,
-        referenceMapUrl: config?.referenceMapUrl || '',
       }}
       onBack={onDone}
       onSave={saveCity} saving={saving}
