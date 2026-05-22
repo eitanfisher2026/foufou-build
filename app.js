@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.42';
+const VERSION = '0.2.43';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -1383,7 +1383,13 @@ const AddCityFlow = ({ showToast, onDone }) => {
   if (step === 'review') return (
     <ReviewLayout
       title={foundCity?.name || ''}
-      areas={areas} setAreas={a => { setAreas(a); setAllCityRadius(recalcRadius(foundCity.lat, foundCity.lng, a)); }}
+      areas={areas} setAreas={a => {
+        if (typeof a === 'function') {
+          setAreas(prev => { const next = a(prev); setAllCityRadius(recalcRadius(foundCity.lat, foundCity.lng, next)); return next; });
+        } else {
+          setAreas(a); setAllCityRadius(recalcRadius(foundCity.lat, foundCity.lng, a));
+        }
+      }}
       selIdx={selIdx} setSelIdx={setSelIdx}
       cityLat={foundCity?.lat} cityLng={foundCity?.lng}
       allCityRadius={allCityRadius}
