@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.45';
+const VERSION = '0.2.46';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -599,7 +599,8 @@ const AreaMap = ({ areas, selectedIdx, cityLat, cityLng, allCityRadius, onSelect
 };
 
 // ─── Area Editor Panel ────────────────────────────────────────────────────────
-const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown }) => {
+const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown, onAIFill }) => {
+  const [filling, setFilling] = React.useState(false);
   if (!area) return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center',
       height:'100%', color:'#94a3b8', fontSize:13, padding:16, textAlign:'center' }}>
@@ -647,8 +648,23 @@ const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown
 
       {inp('Name (English)', 'labelEn', 'e.g. Old Town, Chinatown, Riverside')}
       {inp('Name (Hebrew)', 'label', 'שם האזור בעברית', 'rtl')}
-      {txt('Description (English)', 'descEn', 'ltr', 'e.g. Historic temples, street food, night markets')}
-      {txt('Description (Hebrew)', 'desc', 'rtl', 'תאר בקצרה: אתרים, אווירה, מה לראות')}
+
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:4 }}>
+        <span style={{ fontSize:11, fontWeight:600, color:'#64748b' }}>Descriptions</span>
+        {onAIFill && (
+          <button disabled={filling} onClick={async () => {
+              setFilling(true);
+              await onAIFill(area);
+              setFilling(false);
+            }}
+            style={{ padding:'2px 8px', fontSize:11, borderRadius:6, border:'1px solid #fcd34d',
+              background: filling ? '#f1f5f9' : '#fefce8', cursor:'pointer', color:'#92400e', fontWeight:600 }}>
+            {filling ? '⏳' : '🤖 Fill this area'}
+          </button>
+        )}
+      </div>
+      {txt('English', 'descEn', 'ltr', 'e.g. Historic temples, street food, night markets')}
+      {txt('Hebrew', 'desc', 'rtl', 'תאר בקצרה: אתרים, אווירה, מה לראות')}
 
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:10 }}>
         <div>
@@ -766,6 +782,19 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
     setAreas(prev => { const a=[...prev]; [a[idx],a[next]]=[a[next],a[idx]]; return a; });
     setSelIdx(next); setIsDirty(true);
   };
+  const fillSingleArea = async (area) => {
+    if (!getApiKey()) { setShowKeyPanel(true); return; }
+    const results = await generateWithAI([area], cfgNameEn || title);
+    if (results?.error) { if (showToast) showToast('AI: ' + results.error, 'error'); return; }
+    if (Array.isArray(results) && results[0]) {
+      updateArea(selIdx, { ...area,
+        label: results[0].nameHe || area.label,
+        descEn: results[0].descEn || area.descEn,
+        desc:   results[0].desc   || area.desc,
+      });
+    }
+  };
+
   const moveAreaOnMap = (idx, lat, lng) => {
     setAreas(prev => prev.map((a,i) => i===idx ? {...a, lat, lng} : a));
     setIsDirty(true);
@@ -1049,6 +1078,7 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
             onDelete={() => deleteArea(selIdx)}
             onMoveUp={() => moveArea(selIdx, -1)}
             onMoveDown={() => moveArea(selIdx, 1)}
+            onAIFill={onAIFill ? fillSingleArea : null}
           />
         </div>
       </div>
