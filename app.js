@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.52';
+const VERSION = '0.2.53';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -780,7 +780,6 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
       lat: cityLat, lng: cityLng, radius: allCityRadius,
       icon: cfgIcon, nameEn: cfgNameEn, nameHe: cfgNameHe,
       dayStartHour, nightStartHour, distanceMultiplier: distMultiplier,
-      refMapUrl,
       ...overrides
     });
   };
@@ -934,7 +933,7 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
                 color: mergeMode ? '#d97706' : '#475569' }}>
               {mergeMode ? (mergeFirst !== null ? '⬡ click 2nd area' : '⬡ click 1st area') : '⬡ Merge'}
             </button>
-            <button onClick={() => { onSave({ cityLat, cityLng, allCityRadius, cfgIcon, cfgNameEn, cfgNameHe, dayStartHour, nightStartHour, distMultiplier, refMapUrl }); setIsDirty(false); }}
+            <button onClick={() => { onSave({ cityLat, cityLng, allCityRadius, cfgIcon, cfgNameEn, cfgNameHe, dayStartHour, nightStartHour, distMultiplier }); setIsDirty(false); }}
               disabled={saving || !areas.length}
               style={{ padding:'6px 14px', fontSize:13, background:'#10b981', color:'white',
                 border:'none', borderRadius:8, cursor:'pointer', fontWeight:'bold',
@@ -1542,8 +1541,7 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
           nameEn: meta?.cfgNameEn || regEntry.nameEn,
         })
       ]);
-      showToast(regEntry.nameEn+' saved', 'success');
-      onDone();
+      showToast(regEntry.nameEn+' saved ✓', 'success');
     } catch(e) { showToast('Save failed: '+e.message, 'error'); }
     setSaving(false);
   };
