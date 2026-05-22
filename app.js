@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.44';
+const VERSION = '0.2.45';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -334,7 +334,8 @@ async function callAI(prompt, maxTokens) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { temperature: 0.7, maxOutputTokens: maxTokens || 2048 } })
+            generationConfig: { temperature: 0.7, maxOutputTokens: maxTokens || 2048,
+              thinkingConfig: { thinkingBudget: 0 } } })
         });
         if (r.ok) break;
         const e = await r.json().catch(() => ({}));
