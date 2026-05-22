@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.41';
+const VERSION = '0.2.42';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -379,7 +379,7 @@ async function generateWithAI(areas, cityName) {
   if (!key) return { error: 'No API key. Click 🔑 to add one.' };
   const list = areas.map((a, i) => i + ': ' + (a.labelEn || '')).join('\n');
   const prompt = getPrompt().replace('{cityName}', cityName).replace('{neighborhoods}', list);
-  const result = await callAI(prompt, 2048);
+  const result = await callAI(prompt, 6000);
   if (result && result.error) return result;
   try {
     const stripped = (result||'').replace(/```[a-z]*/g,'').replace(/```/g,'').trim();
@@ -389,7 +389,7 @@ async function generateWithAI(areas, cityName) {
       const m = (result||'').match(/\[\s*\{[\s\S]*\}\s*\]/);
       if (m) try { arr = JSON.parse(m[0]); } catch(e) {}
     }
-    return Array.isArray(arr) ? arr : { error: 'AI returned unexpected format. Try again.' };
+    return Array.isArray(arr) ? arr : { error: 'AI returned unexpected format. Try again.\nRaw: ' + (result||'').slice(0,200) };
   } catch(e) { return { error: 'Could not parse AI response. Try adjusting the prompt.' }; }
 }
 
