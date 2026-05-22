@@ -17,11 +17,11 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.38';
+const VERSION = '0.2.39';
 
 // AI provider configuration
 const AI_PROVIDERS = {
-  gemini:    { name: 'Google Gemini', defaultModel: 'gemini-1.5-flash',         keyHint: 'AIza...',    keyUrl: 'https://aistudio.google.com/apikey',                free: true  },
+  gemini:    { name: 'Google Gemini', defaultModel: 'gemini-2.5-flash',         keyHint: 'AIza...',    keyUrl: 'https://aistudio.google.com/apikey',                free: true  },
   openai:    { name: 'OpenAI / ChatGPT', defaultModel: 'gpt-4o-mini',           keyHint: 'sk-...',     keyUrl: 'https://platform.openai.com/api-keys',              free: false },
   anthropic: { name: 'Anthropic Claude', defaultModel: 'claude-3-5-haiku-20241022', keyHint: 'sk-ant-...', keyUrl: 'https://console.anthropic.com/settings/keys',  free: false },
 };
@@ -338,7 +338,7 @@ async function callAI(prompt, maxTokens) {
         const e = await r.json().catch(() => ({}));
         if (r.status !== 404) return { error: 'Gemini ' + r.status + ': ' + (e?.error?.message || 'Unknown error') };
       }
-      if (!r.ok) { return { error: 'Gemini model "' + model + '" not found.\nUse: gemini-1.5-flash (recommended) or gemini-2.0-flash\nAlso check the Generative Language API is enabled in your Google Cloud project.' }; }
+      if (!r.ok) { return { error: 'Gemini model "' + model + '" not found on your account.\nTry: gemini-2.5-flash  or  gemini-2.0-flash' }; }
       const d = await r.json();
       return (d.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
     }
