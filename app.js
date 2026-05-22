@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.48';
+const VERSION = '0.2.49';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -316,7 +316,7 @@ async function generateCityIcon(cityName) {
     'Return a single emoji that best represents the city "' + cityName + '" as a tourist destination — use its most iconic landmark or cultural symbol.\n' +
     'Examples: Paris→🗼  New York→🗽  Prague→🏰  Tokyo→⛩️  Cairo→🔺  Rome→🏛️  Sydney→🌉  Amsterdam→🚲  London→🎡  Barcelona→🏟️  Venice→🚢  Istanbul→🕌\n' +
     'Return ONLY the single emoji character, nothing else.',
-    50
+    2048
   );
   if (!result || result.error) return '';
   // Find first character with codepoint > 0xFF (i.e. an emoji or non-ASCII symbol)
@@ -452,7 +452,7 @@ async function generateAreasWithAI(cityName, country, cityLat, cityLng, customPr
 async function getCityNameHebrew(cityName) {
   const key = getApiKey();
   if (!key) return '';
-  const result = await callAI('Translate/transliterate the city name "' + cityName + '" to Hebrew. Return only the Hebrew text, nothing else.', 20);
+  const result = await callAI('Translate/transliterate the city name "' + cityName + '" to Hebrew. Return only the Hebrew text, nothing else.', 2048);
   return (result && !result.error) ? result : '';
 }
 
