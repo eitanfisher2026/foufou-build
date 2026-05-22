@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.39';
+const VERSION = '0.2.40';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -380,8 +380,13 @@ async function generateWithAI(areas, cityName) {
   const result = await callAI(prompt, 2048);
   if (result && result.error) return result;
   try {
-    const clean = (result||'').replace(/^```[a-z]*\n?/,'').replace(/\n?```$/,'').trim();
-    const arr = JSON.parse(clean);
+    const stripped = (result||'').replace(/```[a-z]*/g,'').replace(/```/g,'');
+    let arr = null;
+    try { arr = JSON.parse(stripped.trim()); } catch(e) {}
+    if (!Array.isArray(arr)) {
+      const s = result.indexOf('['), e2 = result.lastIndexOf(']');
+      if (s !== -1 && e2 > s) arr = JSON.parse(result.slice(s, e2 + 1));
+    }
     return Array.isArray(arr) ? arr : { error: 'AI returned unexpected format. Try again.' };
   } catch(e) { return { error: 'Could not parse AI response. Try adjusting the prompt.' }; }
 }
@@ -396,11 +401,18 @@ async function generateAreasWithAI(cityName, country, cityLat, cityLng, customPr
     .replace('{cityName}', cityName)
     .replace('{country}', country ? ' (' + country + ')' : '')
     .replace('{cityCenter}', centerLine);
-  const result = await callAI(prompt, 3000);
+  const result = await callAI(prompt, 4000);
   if (!result || result.error) return result || { error: 'No response from AI' };
   try {
-    const clean = result.replace(/^```[a-z]*\n?/,'').replace(/\n?```$/,'').trim();
-    const arr = JSON.parse(clean);
+    // Robust extraction: strip markdown, then find first [ ... ] block.
+    // Handles thinking models (e.g. gemini-2.5-flash) that output reasoning before JSON.
+    const stripped = result.replace(/```[a-z]*/g, '').replace(/```/g, '');
+    let arr = null;
+    try { arr = JSON.parse(stripped.trim()); } catch(e) {}
+    if (!Array.isArray(arr)) {
+      const s = result.indexOf('['), e2 = result.lastIndexOf(']');
+      if (s !== -1 && e2 > s) arr = JSON.parse(result.slice(s, e2 + 1));
+    }
     if (!Array.isArray(arr)) return { error: 'AI returned unexpected format' };
     const areas = arr
       .map((a, i) => ({
@@ -1097,6 +1109,12 @@ const AddCityFlow = ({ showToast, onDone }) => {
         setFoundCity({ name:cityName, address:p.formattedAddress||'',
           lat:p.location.latitude, lng:p.location.longitude, viewport:p.viewport });
         setCityIcon('');
+        // Save current AI settings so generateCityIcon uses the correct key/model
+        if (areaKey.trim()) {
+          localStorage.setItem('foufou_ai_provider', areaProvider);
+          localStorage.setItem('foufou_ai_key_' + areaProvider, areaKey.trim());
+          localStorage.setItem('foufou_ai_model_' + areaProvider, areaModel.trim());
+        }
         if (getApiKey()) {
           setIconSuggesting(true);
           generateCityIcon(cityName)
