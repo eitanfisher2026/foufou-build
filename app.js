@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.47';
+const VERSION = '0.2.48';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -61,6 +61,9 @@ NAMING — use names tourists actually use, not administrative codes:
 - Bangkok → Sukhumvit, Silom, Chatuchak, Rattanakosin, Thonglor...
 - Paris → Montmartre, Le Marais, Saint-Germain, Bastille... (NOT "18th arrondissement")
 - Rome → Trastevere, Testaccio, Prati, Campo de' Fiori...
+- Cardinal names (City Center, North, South, East, West) are acceptable when:
+  tourist-specific names are not commonly used, or when grouping several
+  small nearby sub-areas into one larger zone
 
 COUNT — let the city decide:
 - Small/focused city: 6-8 areas
@@ -345,8 +348,7 @@ async function callAI(prompt, maxTokens) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { temperature: 0.7, maxOutputTokens: maxTokens || 2048,
-              thinkingConfig: { thinkingBudget: 0 } } })
+            generationConfig: { temperature: 0.7, maxOutputTokens: maxTokens || 2048 } })
         });
         if (r.ok) break;
         const e = await r.json().catch(() => ({}));
@@ -391,7 +393,7 @@ async function generateWithAI(areas, cityName) {
   if (!key) return { error: 'No API key. Click 🔑 to add one.' };
   const list = areas.map((a, i) => i + ': ' + (a.labelEn || '')).join('\n');
   const prompt = getPrompt().replace('{cityName}', cityName).replace('{neighborhoods}', list);
-  const result = await callAI(prompt, 6000);
+  const result = await callAI(prompt, 16000);
   if (result && result.error) return result;
   try {
     const stripped = (result||'').replace(/```[a-z]*/g,'').replace(/```/g,'').trim();
@@ -415,7 +417,7 @@ async function generateAreasWithAI(cityName, country, cityLat, cityLng, customPr
     .replace('{cityName}', cityName)
     .replace('{country}', country ? ' (' + country + ')' : '')
     .replace('{cityCenter}', centerLine);
-  const result = await callAI(prompt, 8000);
+  const result = await callAI(prompt, 32768);
   if (!result || result.error) return result || { error: 'No response from AI' };
   try {
     // Robust extraction — handles thinking models that add text around JSON.
