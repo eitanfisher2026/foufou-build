@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.37';
+const VERSION = '0.2.38';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -338,7 +338,7 @@ async function callAI(prompt, maxTokens) {
         const e = await r.json().catch(() => ({}));
         if (r.status !== 404) return { error: 'Gemini ' + r.status + ': ' + (e?.error?.message || 'Unknown error') };
       }
-      if (!r.ok) { return { error: 'Gemini model "' + model + '" not available on your account.\nOpen 🔑, try one of: gemini-1.5-pro, gemini-1.0-pro, gemini-pro' }; }
+      if (!r.ok) { return { error: 'Gemini model "' + model + '" not found.\nUse: gemini-1.5-flash (recommended) or gemini-2.0-flash\nAlso check the Generative Language API is enabled in your Google Cloud project.' }; }
       const d = await r.json();
       return (d.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
     }
