@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.43';
+const VERSION = '0.2.44';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -1169,15 +1169,6 @@ const AddCityFlow = ({ showToast, onDone }) => {
           processed = generateCompassAreas(lat, lng);
         }
         builtAreas = processed.map(buildArea);
-        if (getApiKey()) {
-          generateWithAI(builtAreas, foundCity.name).then(results => {
-            if (results && !results.error) {
-              setAreas(prev => prev.map((a, i) => results[i]
-                ? { ...a, label: results[i].nameHe||a.label, descEn: results[i].descEn||a.descEn, desc: results[i].desc||a.desc }
-                : a));
-            }
-          });
-        }
       } catch(e) {
         showToast('Area generation failed: ' + e.message, 'error');
         setGenStep('');
