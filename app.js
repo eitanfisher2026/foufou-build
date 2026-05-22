@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.40';
+const VERSION = '0.2.41';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -301,12 +301,14 @@ async function generateCityIcon(cityName) {
   const result = await callAI(
     'Return a single emoji that best represents the city "' + cityName + '" as a tourist destination — use its most iconic landmark or cultural symbol.\n' +
     'Examples: Paris→🗼  New York→🗽  Prague→🏰  Tokyo→⛩️  Cairo→🔺  Rome→🏛️  Sydney→🌉  Amsterdam→🚲  London→🎡  Barcelona→🏟️  Venice→🚢  Istanbul→🕌\n' +
-    'Return ONLY the single emoji, nothing else.',
-    10
+    'Return ONLY the single emoji character, nothing else.',
+    50
   );
   if (!result || result.error) return '';
-  const m = (result.trim()).match(/\p{Extended_Pictographic}/u);
-  return m ? m[0] : '';
+  // Find first character with codepoint > 0xFF (i.e. an emoji or non-ASCII symbol)
+  const chars = Array.from(result.trim());
+  const emoji = chars.find(c => c.codePointAt(0) > 0xFF);
+  return emoji || '';
 }
 
 
@@ -380,12 +382,12 @@ async function generateWithAI(areas, cityName) {
   const result = await callAI(prompt, 2048);
   if (result && result.error) return result;
   try {
-    const stripped = (result||'').replace(/```[a-z]*/g,'').replace(/```/g,'');
+    const stripped = (result||'').replace(/```[a-z]*/g,'').replace(/```/g,'').trim();
     let arr = null;
-    try { arr = JSON.parse(stripped.trim()); } catch(e) {}
+    try { arr = JSON.parse(stripped); } catch(e) {}
     if (!Array.isArray(arr)) {
-      const s = result.indexOf('['), e2 = result.lastIndexOf(']');
-      if (s !== -1 && e2 > s) arr = JSON.parse(result.slice(s, e2 + 1));
+      const m = (result||'').match(/\[\s*\{[\s\S]*\}\s*\]/);
+      if (m) try { arr = JSON.parse(m[0]); } catch(e) {}
     }
     return Array.isArray(arr) ? arr : { error: 'AI returned unexpected format. Try again.' };
   } catch(e) { return { error: 'Could not parse AI response. Try adjusting the prompt.' }; }
@@ -401,19 +403,19 @@ async function generateAreasWithAI(cityName, country, cityLat, cityLng, customPr
     .replace('{cityName}', cityName)
     .replace('{country}', country ? ' (' + country + ')' : '')
     .replace('{cityCenter}', centerLine);
-  const result = await callAI(prompt, 4000);
+  const result = await callAI(prompt, 8000);
   if (!result || result.error) return result || { error: 'No response from AI' };
   try {
-    // Robust extraction: strip markdown, then find first [ ... ] block.
-    // Handles thinking models (e.g. gemini-2.5-flash) that output reasoning before JSON.
-    const stripped = result.replace(/```[a-z]*/g, '').replace(/```/g, '');
+    // Robust extraction — handles thinking models that add text around JSON.
+    // Use [\s*{...}\s*] regex to specifically find an array-of-objects block.
+    const stripped = result.replace(/```[a-z]*/g, '').replace(/```/g, '').trim();
     let arr = null;
-    try { arr = JSON.parse(stripped.trim()); } catch(e) {}
+    try { arr = JSON.parse(stripped); } catch(e) {}
     if (!Array.isArray(arr)) {
-      const s = result.indexOf('['), e2 = result.lastIndexOf(']');
-      if (s !== -1 && e2 > s) arr = JSON.parse(result.slice(s, e2 + 1));
+      const m = result.match(/\[\s*\{[\s\S]*\}\s*\]/);
+      if (m) try { arr = JSON.parse(m[0]); } catch(e) {}
     }
-    if (!Array.isArray(arr)) return { error: 'AI returned unexpected format' };
+    if (!Array.isArray(arr)) return { error: 'AI returned unexpected format — raw: ' + result.slice(0, 200) };
     const areas = arr
       .map((a, i) => ({
         id: toId(a.id || a.labelEn || 'area_' + i),
