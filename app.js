@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.51';
+const VERSION = '0.2.52';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -643,7 +643,7 @@ const AreaMap = ({ areas, selectedIdx, cityLat, cityLng, allCityRadius, onSelect
         layersRef.current.push(mover);
       }
     }
-  }, [mapReady, areas, selectedIdx]);
+  }, [mapReady, areas, selectedIdx, allCityRadius]);
 
   return <div ref={divRef} style={{ width:'100%', height:'100%' }} />;
 };
@@ -1042,8 +1042,8 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
               </div>
               <div style={{ display:'flex', alignItems:'center', gap:4 }}>
                 <span style={{ fontSize:12, color:'#475569' }}>Boundary (m)</span>
-                <input type="number" step="500" value={allCityRadius||''}
-                  onChange={e => { const v=parseInt(e.target.value)||allCityRadius; setAllCityRadius(v); setIsDirty(true); notify({radius:v}); }}
+                <input type="number" step="500" min="1000" value={allCityRadius||''}
+                  onChange={e => { const v=Math.max(1000, parseInt(e.target.value)||allCityRadius); setAllCityRadius(v); setIsDirty(true); notify({radius:v}); }}
                   style={{ width:80, padding:'4px 8px', border:'1px solid #93c5fd', borderRadius:6, fontSize:12, outline:'none' }} />
                 <button onClick={autoRadius}
                   style={{ padding:'4px 9px', fontSize:11, background:'#2563eb', color:'white',
