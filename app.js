@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.50';
+const VERSION = '0.2.51';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -310,19 +310,39 @@ async function fetchWikiRefMap(cityName) {
 }
 
 // Ask AI for the single best emoji icon for a city (its famous symbol)
-async function generateCityIcon(cityName) {
-  if (!getApiKey()) return '';
+// Returns 3-5 emoji options for the city, best one first
+async function generateCityIconOptions(cityName) {
+  if (!getApiKey()) return [];
   const result = await callAI(
-    'Return a single emoji that best represents the city "' + cityName + '" as a tourist destination — use its most iconic landmark or cultural symbol.\n' +
-    'Examples: Paris→🗼  New York→🗽  Prague→🏰  Tokyo→⛩️  Cairo→🔺  Rome→🏛️  Sydney→🌉  Amsterdam→🚲  London→🎡  Barcelona→🏟️  Venice→🚢  Istanbul→🕌\n' +
-    'Return ONLY the single emoji character, nothing else.',
+    'Suggest 4-5 emoji icons for the city "' + cityName + '" as a tourist destination.\n' +
+    'Think: iconic landmarks, famous food, architecture, culture — specific to THIS city.\n' +
+    'Put the single most iconic/recognisable symbol FIRST.\n\n' +
+    'Examples:\n' +
+    'Paris     → ["🗼","🥐","🎭","🏰","🍷"]   (Eiffel Tower first)\n' +
+    'Tokyo     → ["⛩️","🗾","🌸","🍜","🎎"]   (shrine gate first)\n' +
+    'New York  → ["🗽","🌆","🍕","🎸","🚕"]   (Statue of Liberty first)\n' +
+    'Amsterdam → ["🚲","🌷","🏠","⚓","🧀"]   (bicycle first)\n' +
+    'Prague    → ["🍺","🎻","🌉","🏰","🎭"]   (beer first, then others)\n' +
+    'Sydney    → ["🌉","🏄","🦘","☀️","🐨"]   (bridge/opera first)\n\n' +
+    'Return ONLY a JSON array of 4-5 emoji strings, nothing else.',
     2048
   );
-  if (!result || result.error) return '';
-  // Find first character with codepoint > 0xFF (i.e. an emoji or non-ASCII symbol)
-  const chars = Array.from(result.trim());
-  const emoji = chars.find(c => c.codePointAt(0) > 0xFF);
-  return emoji || '';
+  if (!result || result.error) return [];
+  try {
+    const stripped = result.replace(/```[a-z]*/g,'').replace(/```/g,'').trim();
+    let arr = null;
+    try { arr = JSON.parse(stripped); } catch(e) {}
+    if (!Array.isArray(arr)) {
+      const m = result.match(/\[[\s\S]*?\]/);
+      if (m) try { arr = JSON.parse(m[0]); } catch(e) {}
+    }
+    if (!Array.isArray(arr)) return [];
+    // Extract first emoji character from each element
+    return arr.slice(0, 5).map(e => {
+      const chars = Array.from(String(e).trim());
+      return chars.find(c => c.codePointAt(0) > 0xFF) || '';
+    }).filter(Boolean);
+  } catch(e) { return []; }
 }
 
 
@@ -1125,7 +1145,8 @@ const AddCityFlow = ({ showToast, onDone }) => {
   const [genStep, setGenStep] = useState(''); // '', 'ai', 'osm', 'wrap'
   const [areas, setAreas]         = useState([]);
   const [selIdx, setSelIdx]       = useState(null);
-  const [cityIcon, setCityIcon]   = useState('');
+  const [cityIcon, setCityIcon]       = useState('');
+  const [iconOptions, setIconOptions] = useState([]);
   const [iconSuggesting, setIconSuggesting] = useState(false);
   const [foundCityHe, setFoundCityHe] = useState('');
   const [saving, setSaving]       = useState(false);
@@ -1171,8 +1192,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
         const cityName = p.displayName?.text || query;
         setFoundCity({ name:cityName, address:p.formattedAddress||'',
           lat:p.location.latitude, lng:p.location.longitude, viewport:p.viewport });
-        setCityIcon('');
-        // Save current AI settings so generateCityIcon uses the correct key/model
+        setCityIcon(''); setIconOptions([]);
         if (areaKey.trim()) {
           localStorage.setItem('foufou_ai_provider', areaProvider);
           localStorage.setItem('foufou_ai_key_' + areaProvider, areaKey.trim());
@@ -1180,8 +1200,8 @@ const AddCityFlow = ({ showToast, onDone }) => {
         }
         if (getApiKey()) {
           setIconSuggesting(true);
-          generateCityIcon(cityName)
-            .then(icon => { if (icon) setCityIcon(icon); })
+          generateCityIconOptions(cityName)
+            .then(opts => { if (opts.length) { setIconOptions(opts); setCityIcon(opts[0]); } })
             .finally(() => setIconSuggesting(false));
         }
       } else { showToast('City not found -- try a different spelling', 'error'); }
@@ -1311,23 +1331,39 @@ const AddCityFlow = ({ showToast, onDone }) => {
             <div style={{ marginTop:14, padding:'12px', background:'white', borderRadius:8, border:'1px solid #d1fae5' }}>
               <div style={{ fontSize:11, fontWeight:700, color:'#374151', marginBottom:8, textTransform:'uppercase', letterSpacing:0.5, display:'flex', alignItems:'center', gap:8 }}>
                 City Icon
-                {iconSuggesting && <span style={{ fontSize:10, color:'#d97706', fontWeight:600 }}>🤖 AI suggesting...</span>}
+                {iconSuggesting && <span style={{ fontSize:10, color:'#d97706', fontWeight:600 }}>🤖 generating options...</span>}
               </div>
-              <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-                <div style={{ fontSize:40, width:56, height:56, display:'flex', alignItems:'center', justifyContent:'center',
-                  border:'2px solid ' + (iconSuggesting ? '#fcd34d' : '#6366f1'),
-                  borderRadius:12, background: iconSuggesting ? '#fefce8' : '#eff6ff', flexShrink:0 }}>
+              {/* AI option buttons */}
+              {iconOptions.length > 0 && (
+                <div style={{ display:'flex', gap:6, marginBottom:10, flexWrap:'wrap', alignItems:'center' }}>
+                  {iconOptions.map((emoji, i) => (
+                    <button key={i} onClick={() => setCityIcon(emoji)}
+                      style={{ fontSize:26, width:46, height:46, borderRadius:10, cursor:'pointer',
+                        border:'2px solid ' + (cityIcon===emoji ? '#6366f1' : '#e2e8f0'),
+                        background: cityIcon===emoji ? '#eff6ff' : 'white',
+                        display:'flex', alignItems:'center', justifyContent:'center',
+                        position:'relative', flexShrink:0 }}>
+                      {emoji}
+                      {i===0 && <span style={{ position:'absolute', top:-5, right:-5, fontSize:8,
+                        background:'#6366f1', color:'white', borderRadius:99, padding:'1px 4px',
+                        fontWeight:700, lineHeight:1.4 }}>★</span>}
+                    </button>
+                  ))}
+                  <span style={{ fontSize:10, color:'#94a3b8' }}>★ = AI favourite</span>
+                </div>
+              )}
+              {/* Custom emoji input */}
+              <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                <div style={{ fontSize:30, width:42, height:42, flexShrink:0,
+                  display:'flex', alignItems:'center', justifyContent:'center',
+                  border:'2px solid ' + (iconSuggesting?'#fcd34d':'#6366f1'),
+                  borderRadius:8, background: iconSuggesting?'#fefce8':'#eff6ff' }}>
                   {iconSuggesting ? '⏳' : (cityIcon || '🏙️')}
                 </div>
-                <div style={{ flex:1 }}>
-                  <input value={cityIcon} onChange={e=>setCityIcon(e.target.value)} maxLength={4}
-                    placeholder={iconSuggesting ? 'AI is choosing...' : 'type any emoji to override'}
-                    style={{ width:'100%', boxSizing:'border-box', padding:'7px 10px', border:'1px solid #e2e8f0',
-                      borderRadius:8, fontSize:16, fontFamily:'inherit', outline:'none' }} />
-                  <div style={{ fontSize:10, color:'#94a3b8', marginTop:4 }}>
-                    AI picks the city symbol automatically — type to override
-                  </div>
-                </div>
+                <input value={cityIcon} onChange={e=>setCityIcon(e.target.value)} maxLength={4}
+                  placeholder="or type any emoji"
+                  style={{ flex:1, padding:'7px 10px', border:'1px solid #e2e8f0',
+                    borderRadius:8, fontSize:15, fontFamily:'inherit', outline:'none' }} />
               </div>
             </div>
 
