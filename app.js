@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.36';
+const VERSION = '0.2.37';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -442,11 +442,11 @@ function buildArea(a, i) {
   };
 }
 
-// Toast -- errors stay open until manually closed; others auto-dismiss after 3.5s
+// Toast -- errors and warnings stay open until manually closed; success/info auto-dismiss
 const Toast = ({ msg, type, onDone }) => {
-  const isError = type === 'error';
+  const stayOpen = type === 'error' || type === 'warning';
   useEffect(() => {
-    if (isError) return; // no auto-dismiss for errors
+    if (stayOpen) return;
     const t = setTimeout(onDone, 3500);
     return () => clearTimeout(t);
   }, []);
@@ -1127,7 +1127,7 @@ const AddCityFlow = ({ showToast, onDone }) => {
       if (Array.isArray(aiResult) && aiResult.length >= 3) {
         builtAreas = aiResult;
       } else if (aiResult?.error) {
-        showToast('AI areas: ' + aiResult.error + ' — trying OpenStreetMap fallback', 'warning');
+        showToast('AI error: ' + aiResult.error + '\nFalling back to OpenStreetMap data.', 'error');
       }
     }
 
