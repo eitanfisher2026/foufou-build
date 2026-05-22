@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.46';
+const VERSION = '0.2.47';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -57,25 +57,36 @@ const AREAS_PROMPT = `You are a travel expert building a tourist app for {cityNa
 {cityCenter}
 Use your knowledge of {cityName} to generate the RIGHT tourist neighborhoods.
 
-NAMING: use the names tourists actually use — NOT administrative codes:
-- Bangkok → Sukhumvit, Silom, Chatuchak, Rattanakosin, Thonglor... (local names)
+NAMING — use names tourists actually use, not administrative codes:
+- Bangkok → Sukhumvit, Silom, Chatuchak, Rattanakosin, Thonglor...
 - Paris → Montmartre, Le Marais, Saint-Germain, Bastille... (NOT "18th arrondissement")
 - Rome → Trastevere, Testaccio, Prati, Campo de' Fiori...
-- Generic cities → whatever tourists call each zone
 
-COUNT: let the city decide (not a fixed number):
-- Small focused city: 6-8 areas
+COUNT — let the city decide:
+- Small/focused city: 6-8 areas
 - Standard tourist city: 9-12 areas
-- Dense city with many distinct neighborhoods (Paris, Istanbul, Bangkok): 12-16 areas
+- Dense city with many distinct zones (Paris, Istanbul, Bangkok): 12-16 areas
+
+RADIUS — the tourist walking zone radius in meters.
+Think: "how far from the center point can a tourist walk and still feel they are in this neighborhood?"
+- Tiny compact district (Jewish Quarter, Medina, Josefov): 300-450m
+- Standard walkable neighborhood: 450-750m
+- Large spread area (Sukhumvit strip, Hyde Park, Beyoglu): 750-1400m
+- CRITICAL: estimate the real-world distance between adjacent area centers.
+  If two neighboring areas are D meters apart, each radius should be ≤ D×0.4
+  so the circles do not significantly overlap.
+Real examples to calibrate:
+  Prague Old Town Square → 400m · Vinohrady → 700m · Holešovice → 900m
+  Tokyo Shinjuku → 800m · Shibuya → 700m · Asakusa → 600m
+  Paris Marais → 600m · Montmartre → 700m · Saint-Germain → 650m
+  Bangkok Silom → 800m · Sukhumvit → 1100m · Rattanakosin → 600m
 
 Return ONLY a JSON array, no markdown:
 [{"id":"snake_case","labelEn":"Tourist name","label":"Hebrew (REQUIRED)","lat":0.0,"lng":0.0,"radius":700,"descEn":"6-8 word vibe","desc":"Hebrew translation (REQUIRED)","safety":"safe"}]
 
-RULES:
+OTHER RULES:
 - lat/lng: real GPS center of THAT neighborhood, 4 decimal places
-- Spread across the full city — north, south, east, west, not clustered at center
-- radius: 400-600m dense, 600-900m mixed, 900-1500m large/waterfront
-- No significant overlap — merge close areas rather than overlap
+- Spread across the full city — north, south, east, west, not only the center
 - label and desc: Hebrew script, REQUIRED, never empty
 - safety: "safe", "caution", or "danger"`;
 
@@ -84,23 +95,24 @@ const AREAS_PROMPT_COMPACT = `You are a travel expert building a tourist app for
 {cityCenter}
 Generate 6-8 BROAD tourist zones — merge nearby attractions into fewer, larger areas.
 Use the names tourists actually use for each zone.
+Radius: 900-2000m (large zones covering substantial territory). Adjacent circles should not overlap.
 
 Return ONLY a JSON array:
-[{"id":"snake_case","labelEn":"Tourist name","label":"Hebrew (REQUIRED)","lat":0.0,"lng":0.0,"radius":1000,"descEn":"6-8 word vibe","desc":"Hebrew translation (REQUIRED)","safety":"safe"}]
+[{"id":"snake_case","labelEn":"Tourist name","label":"Hebrew (REQUIRED)","lat":0.0,"lng":0.0,"radius":1200,"descEn":"6-8 word vibe","desc":"Hebrew translation (REQUIRED)","safety":"safe"}]
 
-RULES: lat/lng real GPS center, spread across city, radius 800-2000m (large zones),
-no overlap, label and desc Hebrew REQUIRED.`;
+RULES: lat/lng real GPS center, spread across city, no overlap, label and desc Hebrew REQUIRED.`;
 
 // DETAILED: 12-18 specific areas — good for dense historic cities (Paris, Istanbul, Bangkok)
 const AREAS_PROMPT_DETAILED = `You are a travel expert building a tourist app for {cityName}{country}.
 {cityCenter}
-Generate 12-18 SPECIFIC tourist neighborhoods — split areas that have distinct characters tourists notice.
+Generate 12-18 SPECIFIC tourist neighborhoods — split areas that have distinct characters.
 Use the names tourists actually use, including sub-neighborhoods.
+Radius: 350-700m (walkable, neighborhood scale). Adjacent circles should not overlap.
 
 Return ONLY a JSON array:
-[{"id":"snake_case","labelEn":"Tourist name","label":"Hebrew (REQUIRED)","lat":0.0,"lng":0.0,"radius":600,"descEn":"6-8 word vibe","desc":"Hebrew translation (REQUIRED)","safety":"safe"}]
+[{"id":"snake_case","labelEn":"Tourist name","label":"Hebrew (REQUIRED)","lat":0.0,"lng":0.0,"radius":500,"descEn":"6-8 word vibe","desc":"Hebrew translation (REQUIRED)","safety":"safe"}]
 
-RULES: lat/lng real GPS center, spread across city, radius 400-800m (walkable scale),
+RULES: lat/lng real GPS center, spread across city, no overlap, label and desc Hebrew REQUIRED.`;
 no overlap, label and desc Hebrew REQUIRED.`;
 
 const getAreasPrompt = () => localStorage.getItem('foufou_areas_prompt') || AREAS_PROMPT;
@@ -432,7 +444,7 @@ async function generateAreasWithAI(cityName, country, cityLat, cityLng, customPr
       }))
       .filter(a => a.lat !== 0 && a.lng !== 0);
     if (areas.length < 3) return { error: 'AI returned too few areas (' + areas.length + ')' };
-    return areas;
+    return adjustRadiiForOverlap(areas);
   } catch(e) { return { error: 'Could not parse AI areas. Try again.' }; }
 }
 
@@ -441,6 +453,20 @@ async function getCityNameHebrew(cityName) {
   if (!key) return '';
   const result = await callAI('Translate/transliterate the city name "' + cityName + '" to Hebrew. Return only the Hebrew text, nothing else.', 20);
   return (result && !result.error) ? result : '';
+}
+
+// Cap each area's radius so it never causes significant overlap with its nearest neighbour.
+// Rule: radius ≤ 45% of distance to the nearest other area center (leaves a ~10% gap).
+function adjustRadiiForOverlap(areas) {
+  return areas.map((a, i) => {
+    const minDist = areas.reduce((min, b, j) => {
+      if (i === j) return min;
+      return Math.min(min, distM(a.lat, a.lng, b.lat, b.lng));
+    }, Infinity);
+    if (minDist === Infinity) return a;
+    const cap = Math.max(300, Math.round(minDist * 0.45 / 50) * 50);
+    return cap < a.radius ? { ...a, radius: cap } : a;
+  });
 }
 
 function buildArea(a, i) {
