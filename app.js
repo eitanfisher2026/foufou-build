@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.55';
+const VERSION = '0.2.56';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -530,12 +530,22 @@ async function suggestAreaNames(area, cityName, direction, onPrompt) {
   try {
     const stripped = result.replace(/```[a-z]*/g,'').replace(/```/g,'').trim();
     let arr = null;
-    try { arr = JSON.parse(stripped); } catch(e) {}
-    if (!Array.isArray(arr)) {
-      const m = result.match(/\[\s*\{[\s\S]*\}\s*\]/);
+    try { const p = JSON.parse(stripped); arr = Array.isArray(p) ? p : null; } catch(e) {}
+    if (!arr) {
+      const m = result.match(/\[\s*\{[\s\S]*?\}\s*\]/);
       if (m) try { arr = JSON.parse(m[0]); } catch(e) {}
     }
-    return Array.isArray(arr) ? arr : { error: 'Could not parse name suggestions' };
+    // Fallback: extract individual objects and build array
+    if (!arr) {
+      const objs = [];
+      const re = /\{[^{}]*"name"\s*:\s*"([^"]+)"[^{}]*\}/g;
+      let hit;
+      while ((hit = re.exec(result)) !== null) {
+        try { objs.push(JSON.parse(hit[0])); } catch(e) {}
+      }
+      if (objs.length) arr = objs;
+    }
+    return Array.isArray(arr) && arr.length ? arr : { error: 'Could not parse name suggestions. Raw: ' + result.slice(0, 300) };
   } catch(e) { return { error: 'Parse error: ' + e.message }; }
 }
 
