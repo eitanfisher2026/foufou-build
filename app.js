@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.60';
+const VERSION = '0.2.61';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -70,19 +70,18 @@ COUNT — let the city decide:
 - Standard tourist city: 9-12 areas
 - Dense city with many distinct zones (Paris, Istanbul, Bangkok): 12-16 areas
 
-RADIUS — the tourist walking zone radius in meters.
-Think: "how far from the center point can a tourist walk and still feel they are in this neighborhood?"
-- Tiny compact district (Jewish Quarter, Medina, Josefov): 300-450m
-- Standard walkable neighborhood: 450-750m
-- Large spread area (Sukhumvit strip, Hyde Park, Beyoglu): 750-1400m
-- CRITICAL: estimate the real-world distance between adjacent area centers.
-  If two neighboring areas are D meters apart, each radius should be ≤ D×0.4
-  so the circles do not significantly overlap.
+RADIUS — size each circle so it covers its full tourist zone with NO gaps to neighbours.
+Think: "how far from the center can a tourist walk and still feel they are in this area?"
+- Tiny compact district (Jewish Quarter, Medina, Josefov): 400-550m
+- Standard walkable neighborhood: 600-900m
+- Large spread area (Sukhumvit strip, Hyde Park, Beyoglu): 900-1500m
+- COVERAGE RULE: if two neighbouring area centers are D meters apart, each radius should be
+  ≈ D×0.55 so the circles overlap slightly — overlap is acceptable, gaps are not.
 Real examples to calibrate:
-  Prague Old Town Square → 400m · Vinohrady → 700m · Holešovice → 900m
-  Tokyo Shinjuku → 800m · Shibuya → 700m · Asakusa → 600m
-  Paris Marais → 600m · Montmartre → 700m · Saint-Germain → 650m
-  Bangkok Silom → 800m · Sukhumvit → 1100m · Rattanakosin → 600m
+  Prague Old Town → 500m · Vinohrady → 800m · Holešovice → 900m
+  Tokyo Shinjuku → 900m · Shibuya → 800m · Asakusa → 700m
+  Paris Marais → 700m · Montmartre → 800m · Saint-Germain → 750m
+  Bangkok Silom → 900m · Sukhumvit → 1200m · Rattanakosin → 700m
 
 Return ONLY a JSON array, no markdown:
 [{"id":"snake_case","labelEn":"Tourist name","label":"Hebrew (REQUIRED)","lat":0.0,"lng":0.0,"radius":700,"descEn":"6-8 word vibe","desc":"Hebrew translation (REQUIRED)","safety":"safe"}]
@@ -106,7 +105,7 @@ const AREAS_PROMPT_COMPACT = `You are a travel expert building a tourist app for
 {cityCenter}
 Generate 6-8 BROAD tourist zones — merge nearby attractions into fewer, larger areas.
 Use the names tourists actually use for each zone.
-Radius: 900-2000m (large zones covering substantial territory). Adjacent circles should not overlap.
+Radius: 900-2000m (large zones covering substantial territory). Circles should overlap slightly — gaps are worse than overlap.
 
 Return ONLY a JSON array:
 [{"id":"snake_case","labelEn":"Tourist name","label":"Hebrew (REQUIRED)","lat":0.0,"lng":0.0,"radius":1200,"descEn":"6-8 word vibe","desc":"Hebrew translation (REQUIRED)","safety":"safe"}]
@@ -120,7 +119,7 @@ const AREAS_PROMPT_DETAILED = `You are a travel expert building a tourist app fo
 {cityCenter}
 Generate 12-18 SPECIFIC tourist neighborhoods — split areas that have distinct characters.
 Use the names tourists actually use, including sub-neighborhoods.
-Radius: 350-700m (walkable, neighborhood scale). Adjacent circles should not overlap.
+Radius: 400-800m (walkable, neighborhood scale). Circles should overlap slightly — gaps are worse than overlap.
 
 Return ONLY a JSON array:
 [{"id":"snake_case","labelEn":"Tourist name","label":"Hebrew (REQUIRED)","lat":0.0,"lng":0.0,"radius":500,"descEn":"6-8 word vibe","desc":"Hebrew translation (REQUIRED)","safety":"safe"}]
@@ -488,9 +487,11 @@ async function getCityNameHebrew(cityName) {
   return (result && !result.error) ? result : '';
 }
 
-// Adjust radii so circles don't badly overlap.
-// Cap:   radius <= 52% of nearest-neighbour distance (prevents major overlap in dense cities).
-// Floor: 300m absolute minimum (isolated areas keep their AI-suggested radius unchanged).
+// Expand radii to ensure coverage — gaps are worse than overlap for a tourist app.
+// Each radius is set to AT LEAST 58% of the distance to its nearest neighbour,
+// so adjacent circles always overlap slightly and leave no uncovered zone.
+// The AI's own radius is kept if it's already larger.
+// Hard cap: 2000m (avoid absurdly large isolated circles).
 function adjustRadiiForOverlap(areas) {
   return areas.map((a, i) => {
     const minDist = areas.reduce((min, b, j) => {
@@ -498,8 +499,8 @@ function adjustRadiiForOverlap(areas) {
       return Math.min(min, distM(a.lat, a.lng, b.lat, b.lng));
     }, Infinity);
     if (minDist === Infinity) return a;
-    const cap = Math.round(minDist * 0.52 / 50) * 50;
-    const r = Math.min(2000, Math.max(300, Math.min(a.radius, cap)));
+    const floor = Math.round(minDist * 0.58 / 50) * 50;
+    const r = Math.min(2000, Math.max(floor, a.radius));
     return { ...a, radius: r };
   });
 }
