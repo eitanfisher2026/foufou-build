@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.53';
+const VERSION = '0.2.54';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -493,6 +493,48 @@ function adjustRadiiForOverlap(areas) {
   });
 }
 
+// Returns compass direction of area relative to city center
+function getGeographicDirection(lat, lng, cityLat, cityLng) {
+  if (!cityLat || !cityLng) return '';
+  if (distM(lat, lng, cityLat, cityLng) < 600) return 'Center';
+  const angle = Math.atan2(lng - cityLng, lat - cityLat) * 180 / Math.PI;
+  const dirs = ['North','Northeast','East','Southeast','South','Southwest','West','Northwest'];
+  return dirs[Math.round(((angle % 360) + 360) % 360 / 45) % 8];
+}
+
+// Prompt shown to user when they expand it
+function buildSuggestNamePrompt(area, cityName, direction) {
+  return `City: ${cityName}
+Area: "${area.labelEn}" — located ${direction} of the city center (GPS: ${area.lat}, ${area.lng})
+
+Suggest 3 name options for this tourist area:
+1. Tourist name: the name tourists and travel guides use (memorable, evocative)
+2. Geographic name: based on its compass position — ${direction} of city center
+3. Official name: the administrative district or official neighborhood name
+
+Recommend the single best option for a tourist app.
+
+Return ONLY a JSON array (no explanation):
+[{"type":"tourist","name":"...","recommended":true},{"type":"geographic","name":"...","recommended":false},{"type":"official","name":"...","recommended":false}]`;
+}
+
+async function suggestAreaNames(area, cityName, direction, onPrompt) {
+  const prompt = buildSuggestNamePrompt(area, cityName, direction);
+  if (onPrompt) onPrompt(prompt);
+  const result = await callAI(prompt, 2048);
+  if (!result || result.error) return result || { error: 'No response' };
+  try {
+    const stripped = result.replace(/```[a-z]*/g,'').replace(/```/g,'').trim();
+    let arr = null;
+    try { arr = JSON.parse(stripped); } catch(e) {}
+    if (!Array.isArray(arr)) {
+      const m = result.match(/\[\s*\{[\s\S]*\}\s*\]/);
+      if (m) try { arr = JSON.parse(m[0]); } catch(e) {}
+    }
+    return Array.isArray(arr) ? arr : { error: 'Could not parse name suggestions' };
+  } catch(e) { return { error: 'Parse error: ' + e.message }; }
+}
+
 function buildArea(a, i) {
   const name = a.nameEn || a.labelEn || '';
   return {
@@ -649,8 +691,13 @@ const AreaMap = ({ areas, selectedIdx, cityLat, cityLng, allCityRadius, onSelect
 };
 
 // ─── Area Editor Panel ────────────────────────────────────────────────────────
-const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown, onAIFill }) => {
+const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown, onAIFill, cityLat, cityLng, onSuggestName }) => {
   const [filling, setFilling] = React.useState(false);
+  const [suggesting, setSuggesting] = React.useState(false);
+  const [nameSuggestions, setNameSuggestions] = React.useState(null);
+  const [lastPromptText, setLastPromptText] = React.useState('');
+  const [showNamePrompt, setShowNamePrompt] = React.useState(false);
+  const direction = (area && cityLat && cityLng) ? getGeographicDirection(area.lat, area.lng, cityLat, cityLng) : '';
   if (!area) return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center',
       height:'100%', color:'#94a3b8', fontSize:13, padding:16, textAlign:'center' }}>
@@ -696,7 +743,81 @@ const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown
         </div>
       </div>
 
-      {inp('Name (English)', 'labelEn', 'e.g. Old Town, Chinatown, Riverside')}
+      {/* Name EN with direction badge + AI suggest */}
+      <div style={{ marginBottom:10 }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:4 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+            <span style={{ fontSize:11, fontWeight:600, color:'#64748b' }}>Name (English)</span>
+            {direction && (
+              <span style={{ fontSize:10, fontWeight:700, color:'#7c3aed', background:'#ede9fe',
+                padding:'1px 6px', borderRadius:10, letterSpacing:0.2 }}>{direction}</span>
+            )}
+          </div>
+          {onSuggestName && (
+            <button disabled={suggesting} onClick={async () => {
+                setSuggesting(true); setNameSuggestions(null); setShowNamePrompt(false);
+                const res = await onSuggestName(area, direction, (prompt) => setLastPromptText(prompt));
+                setSuggesting(false);
+                setNameSuggestions(res || { error: 'No response' });
+              }}
+              style={{ padding:'2px 7px', fontSize:10, borderRadius:6,
+                border:'1px solid #a78bfa', background: suggesting ? '#f5f3ff' : '#faf5ff',
+                cursor:'pointer', color:'#7c3aed', fontWeight:600, whiteSpace:'nowrap' }}>
+              {suggesting ? '⏳' : '🤖 Suggest Name'}
+            </button>
+          )}
+        </div>
+        <input value={area.labelEn||''} onChange={e => onChange({...area, labelEn:e.target.value})}
+          placeholder="e.g. Old Town, Chinatown, Riverside"
+          style={{ width:'100%', boxSizing:'border-box', padding:'6px 10px', border:'1px solid #e2e8f0',
+            borderRadius:8, fontSize:13, outline:'none', fontFamily:'inherit' }} />
+      </div>
+      {/* Name suggestion chips */}
+      {nameSuggestions && !nameSuggestions.error && (
+        <div style={{ marginBottom:10, background:'#f5f3ff', borderRadius:8, padding:'8px 10px', border:'1px solid #ede9fe' }}>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:6 }}>
+            <span style={{ fontSize:10, fontWeight:700, color:'#7c3aed', textTransform:'uppercase', letterSpacing:0.5 }}>Suggested Names</span>
+            <button onClick={() => setShowNamePrompt(v => !v)}
+              style={{ fontSize:10, color:'#9ca3af', background:'none', border:'none', cursor:'pointer' }}>
+              {showNamePrompt ? 'hide prompt' : 'show prompt'}
+            </button>
+          </div>
+          {showNamePrompt && lastPromptText && (
+            <pre style={{ fontSize:9, color:'#6b7280', background:'#f9f7ff', border:'1px solid #e5e7eb',
+              borderRadius:6, padding:'6px 8px', marginBottom:8, overflowX:'auto', whiteSpace:'pre-wrap',
+              fontFamily:'monospace', lineHeight:1.4 }}>
+              {lastPromptText}
+            </pre>
+          )}
+          <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+            {nameSuggestions.map((s, i) => (
+              <button key={i} onClick={() => { onChange({...area, labelEn: s.name}); setNameSuggestions(null); }}
+                style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 9px',
+                  background: s.recommended ? '#7c3aed' : 'white',
+                  color: s.recommended ? 'white' : '#374151',
+                  border: '1px solid ' + (s.recommended ? '#7c3aed' : '#d1d5db'),
+                  borderRadius:6, cursor:'pointer', fontSize:12, textAlign:'left',
+                  fontWeight: s.recommended ? 700 : 400 }}>
+                <span style={{ flex:1 }}>{s.name}</span>
+                <span style={{ fontSize:9, opacity:0.65 }}>{s.type}</span>
+                {s.recommended && <span style={{ fontSize:9 }}>★</span>}
+              </button>
+            ))}
+          </div>
+          <button onClick={() => setNameSuggestions(null)}
+            style={{ marginTop:5, fontSize:10, color:'#9ca3af', background:'none', border:'none', cursor:'pointer' }}>
+            dismiss
+          </button>
+        </div>
+      )}
+      {nameSuggestions?.error && (
+        <div style={{ marginBottom:10, color:'#dc2626', fontSize:11, background:'#fef2f2',
+          padding:'5px 8px', borderRadius:6, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+          <span>{nameSuggestions.error}</span>
+          <button onClick={() => setNameSuggestions(null)}
+            style={{ fontSize:10, color:'#dc2626', background:'none', border:'none', cursor:'pointer' }}>✕</button>
+        </div>
+      )}
       {inp('Name (Hebrew)', 'label', 'שם האזור בעברית', 'rtl')}
 
       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:4 }}>
@@ -735,7 +856,10 @@ const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown
           </select>
         </div>
       </div>
-      <div style={{ fontSize:11, color:'#cbd5e1' }}>Center: {area.lat}, {area.lng}</div>
+      <div style={{ fontSize:11, color:'#cbd5e1' }}>
+        {direction && <span style={{ color:'#c4b5fd', marginRight:5 }}>{direction}</span>}
+        {area.lat}, {area.lng}
+      </div>
     </div>
   );
 };
@@ -1128,6 +1252,11 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
             onMoveUp={() => moveArea(selIdx, -1)}
             onMoveDown={() => moveArea(selIdx, 1)}
             onAIFill={onAIFill ? fillSingleArea : null}
+            cityLat={cityLat} cityLng={cityLng}
+            onSuggestName={async (area, direction, onPrompt) => {
+              if (!getApiKey()) { setShowKeyPanel(true); return { error: 'No API key set. Click 🔑 to add one.' }; }
+              return await suggestAreaNames(area, cfgNameEn || title, direction, onPrompt);
+            }}
           />
         </div>
       </div>
