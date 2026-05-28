@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.58';
+const VERSION = '0.2.59';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -488,10 +488,10 @@ async function getCityNameHebrew(cityName) {
   return (result && !result.error) ? result : '';
 }
 
-// Set each area's radius so adjacent circles just slightly overlap (~4%).
-// Rule: radius = max(AI suggestion, 52% of distance to nearest neighbour).
-// 52% + 52% = 104% → circles overlap by ~4%, leaving no uncovered gaps.
-// AI's larger suggestion is preserved for open areas.
+// Adjust radii so circles don't badly overlap and don't leave gaps.
+// Cap:   radius <= 52% of nearest-neighbour distance (prevents major overlap).
+// Floor: radius >= 45% of nearest-neighbour distance, min 300m (prevents gaps).
+// Scales automatically: dense cities get small circles, spread cities get large ones.
 function adjustRadiiForOverlap(areas) {
   return areas.map((a, i) => {
     const minDist = areas.reduce((min, b, j) => {
@@ -499,8 +499,9 @@ function adjustRadiiForOverlap(areas) {
       return Math.min(min, distM(a.lat, a.lng, b.lat, b.lng));
     }, Infinity);
     if (minDist === Infinity) return a;
-    const target = Math.round(minDist * 0.52 / 50) * 50;
-    const r = Math.min(2000, Math.max(300, Math.max(a.radius, target)));
+    const cap   = Math.round(minDist * 0.52 / 50) * 50;
+    const floor = Math.max(300, Math.round(minDist * 0.45 / 50) * 50);
+    const r = Math.min(2000, Math.max(floor, Math.min(a.radius, cap)));
     return { ...a, radius: r };
   });
 }
