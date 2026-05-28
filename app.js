@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.54';
+const VERSION = '0.2.55';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -512,10 +512,14 @@ Suggest 3 name options for this tourist area:
 2. Geographic name: based on its compass position — ${direction} of city center
 3. Official name: the administrative district or official neighborhood name
 
+IMPORTANT: Do NOT include the city name in any suggestion. Just the neighborhood/district name alone.
+Example: for Vienna's Old Town → "Old Town" NOT "Vienna's Old Town"
+
 Recommend the single best option for a tourist app.
+For each option also provide nameHe: the Hebrew translation/transliteration.
 
 Return ONLY a JSON array (no explanation):
-[{"type":"tourist","name":"...","recommended":true},{"type":"geographic","name":"...","recommended":false},{"type":"official","name":"...","recommended":false}]`;
+[{"type":"tourist","name":"...","nameHe":"...","recommended":true},{"type":"geographic","name":"...","nameHe":"...","recommended":false},{"type":"official","name":"...","nameHe":"...","recommended":false}]`;
 }
 
 async function suggestAreaNames(area, cityName, direction, onPrompt) {
@@ -697,6 +701,7 @@ const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown
   const [nameSuggestions, setNameSuggestions] = React.useState(null);
   const [lastPromptText, setLastPromptText] = React.useState('');
   const [showNamePrompt, setShowNamePrompt] = React.useState(false);
+  const [showDescPrompt, setShowDescPrompt] = React.useState(false);
   const direction = (area && cityLat && cityLng) ? getGeographicDirection(area.lat, area.lng, cityLat, cityLng) : '';
   if (!area) return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'center',
@@ -743,28 +748,13 @@ const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown
         </div>
       </div>
 
-      {/* Name EN with direction badge + AI suggest */}
+      {/* Name EN + direction badge */}
       <div style={{ marginBottom:10 }}>
-        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:4 }}>
-          <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-            <span style={{ fontSize:11, fontWeight:600, color:'#64748b' }}>Name (English)</span>
-            {direction && (
-              <span style={{ fontSize:10, fontWeight:700, color:'#7c3aed', background:'#ede9fe',
-                padding:'1px 6px', borderRadius:10, letterSpacing:0.2 }}>{direction}</span>
-            )}
-          </div>
-          {onSuggestName && (
-            <button disabled={suggesting} onClick={async () => {
-                setSuggesting(true); setNameSuggestions(null); setShowNamePrompt(false);
-                const res = await onSuggestName(area, direction, (prompt) => setLastPromptText(prompt));
-                setSuggesting(false);
-                setNameSuggestions(res || { error: 'No response' });
-              }}
-              style={{ padding:'2px 7px', fontSize:10, borderRadius:6,
-                border:'1px solid #a78bfa', background: suggesting ? '#f5f3ff' : '#faf5ff',
-                cursor:'pointer', color:'#7c3aed', fontWeight:600, whiteSpace:'nowrap' }}>
-              {suggesting ? '⏳' : '🤖 Suggest Name'}
-            </button>
+        <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:4 }}>
+          <span style={{ fontSize:11, fontWeight:600, color:'#64748b' }}>Name (English)</span>
+          {direction && (
+            <span style={{ fontSize:10, fontWeight:700, color:'#7c3aed', background:'#ede9fe',
+              padding:'1px 6px', borderRadius:10, letterSpacing:0.2 }}>{direction}</span>
           )}
         </div>
         <input value={area.labelEn||''} onChange={e => onChange({...area, labelEn:e.target.value})}
@@ -772,68 +762,108 @@ const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown
           style={{ width:'100%', boxSizing:'border-box', padding:'6px 10px', border:'1px solid #e2e8f0',
             borderRadius:8, fontSize:13, outline:'none', fontFamily:'inherit' }} />
       </div>
-      {/* Name suggestion chips */}
-      {nameSuggestions && !nameSuggestions.error && (
-        <div style={{ marginBottom:10, background:'#f5f3ff', borderRadius:8, padding:'8px 10px', border:'1px solid #ede9fe' }}>
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:6 }}>
-            <span style={{ fontSize:10, fontWeight:700, color:'#7c3aed', textTransform:'uppercase', letterSpacing:0.5 }}>Suggested Names</span>
-            <button onClick={() => setShowNamePrompt(v => !v)}
-              style={{ fontSize:10, color:'#9ca3af', background:'none', border:'none', cursor:'pointer' }}>
-              {showNamePrompt ? 'hide prompt' : 'show prompt'}
-            </button>
-          </div>
-          {showNamePrompt && lastPromptText && (
-            <pre style={{ fontSize:9, color:'#6b7280', background:'#f9f7ff', border:'1px solid #e5e7eb',
-              borderRadius:6, padding:'6px 8px', marginBottom:8, overflowX:'auto', whiteSpace:'pre-wrap',
-              fontFamily:'monospace', lineHeight:1.4 }}>
-              {lastPromptText}
-            </pre>
-          )}
-          <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
-            {nameSuggestions.map((s, i) => (
-              <button key={i} onClick={() => { onChange({...area, labelEn: s.name}); setNameSuggestions(null); }}
-                style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 9px',
-                  background: s.recommended ? '#7c3aed' : 'white',
-                  color: s.recommended ? 'white' : '#374151',
-                  border: '1px solid ' + (s.recommended ? '#7c3aed' : '#d1d5db'),
-                  borderRadius:6, cursor:'pointer', fontSize:12, textAlign:'left',
-                  fontWeight: s.recommended ? 700 : 400 }}>
-                <span style={{ flex:1 }}>{s.name}</span>
-                <span style={{ fontSize:9, opacity:0.65 }}>{s.type}</span>
-                {s.recommended && <span style={{ fontSize:9 }}>★</span>}
-              </button>
-            ))}
-          </div>
-          <button onClick={() => setNameSuggestions(null)}
-            style={{ marginTop:5, fontSize:10, color:'#9ca3af', background:'none', border:'none', cursor:'pointer' }}>
-            dismiss
-          </button>
-        </div>
-      )}
-      {nameSuggestions?.error && (
-        <div style={{ marginBottom:10, color:'#dc2626', fontSize:11, background:'#fef2f2',
-          padding:'5px 8px', borderRadius:6, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-          <span>{nameSuggestions.error}</span>
-          <button onClick={() => setNameSuggestions(null)}
-            style={{ fontSize:10, color:'#dc2626', background:'none', border:'none', cursor:'pointer' }}>✕</button>
-        </div>
-      )}
       {inp('Name (Hebrew)', 'label', 'שם האזור בעברית', 'rtl')}
 
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:4 }}>
-        <span style={{ fontSize:11, fontWeight:600, color:'#64748b' }}>Descriptions</span>
-        {onAIFill && (
-          <button disabled={filling} onClick={async () => {
-              setFilling(true);
-              await onAIFill(area);
-              setFilling(false);
-            }}
-            style={{ padding:'2px 8px', fontSize:11, borderRadius:6, border:'1px solid #fcd34d',
-              background: filling ? '#f1f5f9' : '#fefce8', cursor:'pointer', color:'#92400e', fontWeight:600 }}>
-            {filling ? '⏳' : '🤖 Fill this area'}
-          </button>
-        )}
-      </div>
+      {/* Unified AI Panel */}
+      {(onSuggestName || onAIFill) && (
+        <div style={{ marginBottom:12, border:'1px solid #e2e8f0', borderRadius:8, overflow:'hidden' }}>
+
+          {/* --- Suggest Name row --- */}
+          {onSuggestName && (<>
+            <div style={{ display:'flex', alignItems:'center', padding:'7px 10px',
+              background: showNamePrompt ? '#faf5ff' : '#fafafa',
+              borderBottom:'1px solid #f1f5f9' }}>
+              <span style={{ flex:1, fontSize:12, fontWeight:600, color:'#7c3aed' }}>📝 Suggest Name</span>
+              <span style={{ fontSize:10, color:'#94a3b8', marginRight:6 }}>
+                {AI_PROVIDERS[getProvider()]?.name || getProvider()}
+              </span>
+              <button onClick={() => setShowNamePrompt(v => !v)}
+                style={{ fontSize:10, color:'#9ca3af', background:'none', border:'none', cursor:'pointer', marginRight:6 }}>
+                {showNamePrompt ? 'hide ▴' : 'prompt ▾'}
+              </button>
+              <button disabled={suggesting} onClick={async () => {
+                  setSuggesting(true); setNameSuggestions(null);
+                  const res = await onSuggestName(area, direction, (p) => setLastPromptText(p));
+                  setSuggesting(false);
+                  setNameSuggestions(res || { error: 'No response' });
+                }}
+                style={{ padding:'3px 10px', fontSize:11, borderRadius:6, background:'#7c3aed',
+                  color:'white', border:'none', cursor:'pointer', fontWeight:700, opacity: suggesting ? 0.6 : 1 }}>
+                {suggesting ? '⏳' : '▶ Run'}
+              </button>
+            </div>
+            {showNamePrompt && lastPromptText && (
+              <pre style={{ margin:0, padding:'8px 10px', fontSize:9, color:'#6b7280',
+                background:'#faf5ff', borderBottom:'1px solid #ede9fe',
+                whiteSpace:'pre-wrap', fontFamily:'monospace', lineHeight:1.4, overflowX:'auto' }}>
+                {lastPromptText}
+              </pre>
+            )}
+            {nameSuggestions && !nameSuggestions.error && (
+              <div style={{ padding:'8px 10px', background:'#f5f3ff', borderBottom:'1px solid #ede9fe' }}>
+                <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+                  {nameSuggestions.map((s, i) => (
+                    <button key={i}
+                      onClick={() => { onChange({...area, labelEn:s.name, label:s.nameHe||area.label}); setNameSuggestions(null); }}
+                      style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 9px',
+                        background: s.recommended ? '#7c3aed' : 'white',
+                        color: s.recommended ? 'white' : '#374151',
+                        border: '1px solid ' + (s.recommended ? '#7c3aed' : '#d1d5db'),
+                        borderRadius:6, cursor:'pointer', fontSize:12, textAlign:'left',
+                        fontWeight: s.recommended ? 700 : 400 }}>
+                      <span style={{ flex:1 }}>{s.name}</span>
+                      {s.nameHe && <span style={{ fontSize:11, opacity:0.8 }} dir="rtl">{s.nameHe}</span>}
+                      <span style={{ fontSize:9, opacity:0.5 }}>{s.type}</span>
+                      {s.recommended && <span style={{ fontSize:10 }}>★</span>}
+                    </button>
+                  ))}
+                </div>
+                <button onClick={() => setNameSuggestions(null)}
+                  style={{ marginTop:4, fontSize:10, color:'#9ca3af', background:'none', border:'none', cursor:'pointer' }}>
+                  dismiss
+                </button>
+              </div>
+            )}
+            {nameSuggestions?.error && (
+              <div style={{ padding:'6px 10px', color:'#dc2626', fontSize:11, background:'#fef2f2',
+                borderBottom:'1px solid #fecaca', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                <span>{nameSuggestions.error}</span>
+                <button onClick={() => setNameSuggestions(null)}
+                  style={{ fontSize:10, color:'#dc2626', background:'none', border:'none', cursor:'pointer' }}>✕</button>
+              </div>
+            )}
+          </>)}
+
+          {/* --- Fill Description row --- */}
+          {onAIFill && (<>
+            <div style={{ display:'flex', alignItems:'center', padding:'7px 10px',
+              background: showDescPrompt ? '#fffbeb' : '#fafafa' }}>
+              <span style={{ flex:1, fontSize:12, fontWeight:600, color:'#d97706' }}>✍️ Fill Description</span>
+              <span style={{ fontSize:10, color:'#94a3b8', marginRight:6 }}>
+                {AI_PROVIDERS[getProvider()]?.name || getProvider()}
+              </span>
+              <button onClick={() => setShowDescPrompt(v => !v)}
+                style={{ fontSize:10, color:'#9ca3af', background:'none', border:'none', cursor:'pointer', marginRight:6 }}>
+                {showDescPrompt ? 'hide ▴' : 'prompt ▾'}
+              </button>
+              <button disabled={filling} onClick={async () => { setFilling(true); await onAIFill(area); setFilling(false); }}
+                style={{ padding:'3px 10px', fontSize:11, borderRadius:6, background:'#d97706',
+                  color:'white', border:'none', cursor:'pointer', fontWeight:700, opacity: filling ? 0.6 : 1 }}>
+                {filling ? '⏳' : '▶ Run'}
+              </button>
+            </div>
+            {showDescPrompt && (
+              <pre style={{ margin:0, padding:'8px 10px', fontSize:9, color:'#6b7280',
+                background:'#fffbeb', whiteSpace:'pre-wrap', fontFamily:'monospace', lineHeight:1.4, overflowX:'auto' }}>
+                {getPrompt().replace('{cityName}','…').replace('{neighborhoods}', area.labelEn||'…')}
+              </pre>
+            )}
+          </>)}
+
+        </div>
+      )}
+
+      <div style={{ fontSize:11, fontWeight:600, color:'#64748b', marginBottom:4 }}>Descriptions</div>
       {txt('English', 'descEn', 'ltr', 'e.g. Historic temples, street food, night markets')}
       {txt('Hebrew', 'desc', 'rtl', 'תאר בקצרה: אתרים, אווירה, מה לראות')}
 
