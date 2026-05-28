@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.57';
+const VERSION = '0.2.58';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -91,7 +91,15 @@ OTHER RULES:
 - lat/lng: real GPS center of THAT neighborhood, 4 decimal places
 - Spread across the full city — north, south, east, west, not only the center
 - label and desc: Hebrew script, REQUIRED, never empty
-- safety: "safe", "caution", or "danger"`;
+- safety: "safe", "caution", "danger", or "local"
+  · safe   = popular tourist area, plenty to see and do
+  · local  = residential or in-between area, low tourist interest but fills coverage gap
+  · caution = exercise normal urban caution
+  · danger = avoid at night or entirely
+- COVERAGE: ensure NO significant blank spots inside the city footprint, especially near the center.
+  If a zone between tourist areas has no specific tourist draw, add it with safety "local" and
+  an honest description (e.g. "Quiet residential streets, few tourist attractions")
+  so the app has content everywhere inside the boundary.`;
 
 // COMPACT: 6-8 broad zones — good for smaller or grid-layout cities
 const AREAS_PROMPT_COMPACT = `You are a travel expert building a tourist app for {cityName}{country}.
@@ -103,7 +111,9 @@ Radius: 900-2000m (large zones covering substantial territory). Adjacent circles
 Return ONLY a JSON array:
 [{"id":"snake_case","labelEn":"Tourist name","label":"Hebrew (REQUIRED)","lat":0.0,"lng":0.0,"radius":1200,"descEn":"6-8 word vibe","desc":"Hebrew translation (REQUIRED)","safety":"safe"}]
 
-RULES: lat/lng real GPS center, spread across city, no overlap, label and desc Hebrew REQUIRED.`;
+RULES: lat/lng real GPS center, spread across city, no overlap, label and desc Hebrew REQUIRED.
+safety: "safe" (tourist area), "local" (residential filler, low tourist interest), "caution", or "danger".
+COVERAGE: no blank spots inside the city boundary — use "local" areas to fill gaps near the center.`;
 
 // DETAILED: 12-18 specific areas — good for dense historic cities (Paris, Istanbul, Bangkok)
 const AREAS_PROMPT_DETAILED = `You are a travel expert building a tourist app for {cityName}{country}.
@@ -115,7 +125,9 @@ Radius: 350-700m (walkable, neighborhood scale). Adjacent circles should not ove
 Return ONLY a JSON array:
 [{"id":"snake_case","labelEn":"Tourist name","label":"Hebrew (REQUIRED)","lat":0.0,"lng":0.0,"radius":500,"descEn":"6-8 word vibe","desc":"Hebrew translation (REQUIRED)","safety":"safe"}]
 
-RULES: lat/lng real GPS center, spread across city, no overlap, label and desc Hebrew REQUIRED.`;
+RULES: lat/lng real GPS center, spread across city, no overlap, label and desc Hebrew REQUIRED.
+safety: "safe" (tourist area), "local" (residential filler, low tourist interest), "caution", or "danger".
+COVERAGE: no blank spots inside the city boundary — use "local" areas to fill gaps near the center.`;
 
 const getAreasPrompt = () => localStorage.getItem('foufou_areas_prompt') || AREAS_PROMPT;
 const GOOGLE_KEY   = 'AIzaSyCE598tSisniM66ApqRvOyOq4svTf6pLHc';
@@ -894,6 +906,7 @@ const AreaEditor = ({ area, idx, total, onChange, onDelete, onMoveUp, onMoveDown
             style={{ width:'100%', boxSizing:'border-box', padding:'6px 10px', border:'1px solid #e2e8f0',
               borderRadius:8, fontSize:13, outline:'none', background:'white' }}>
             <option value="safe">Safe</option>
+            <option value="local">Local (residential filler)</option>
             <option value="caution">Caution</option>
             <option value="danger">Danger</option>
           </select>
@@ -1261,12 +1274,14 @@ const ReviewLayout = ({ title, areas, setAreas, selIdx, setSelIdx,
                   color:'white', fontSize:10, display:'flex', alignItems:'center', justifyContent:'center',
                   fontWeight:'bold', flexShrink:0 }}>{i+1}</span>
                 <div style={{ minWidth:0 }}>
-                  <div style={{ fontSize:12, fontWeight:600, color:'#1e293b',
+                  <div style={{ fontSize:12, fontWeight:600,
+                    color: area.safety==='local' ? '#94a3b8' : '#1e293b',
                     overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                     {area.labelEn || '(unnamed)'}
+                    {area.safety==='local' && <span style={{ fontSize:9, color:'#cbd5e1', marginLeft:4 }}>local</span>}
                   </div>
                   {area.label && (
-                    <div style={{ fontSize:11, color:'#94a3b8',
+                    <div style={{ fontSize:11, color:'#cbd5e1',
                       overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                       {area.label}
                     </div>
