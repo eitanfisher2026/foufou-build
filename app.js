@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.56';
+const VERSION = '0.2.57';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -512,8 +512,11 @@ Suggest 3 name options for this tourist area:
 2. Geographic name: based on its compass position — ${direction} of city center
 3. Official name: the administrative district or official neighborhood name
 
-IMPORTANT: Do NOT include the city name in any suggestion. Just the neighborhood/district name alone.
-Example: for Vienna's Old Town → "Old Town" NOT "Vienna's Old Town"
+IMPORTANT:
+- Do NOT include the city name — just the neighborhood/district name
+- Multi-word names are fine when clearer: "Historic Center", "Old Town & Jewish Quarter"
+- Use & to combine two naturally-grouped zones: "Museum Quarter & City Park", "Arts District & Waterfront"
+- Prioritize what a tourist would immediately recognize or search for
 
 Recommend the single best option for a tourist app.
 For each option also provide nameHe: the Hebrew translation/transliteration.
