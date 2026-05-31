@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.62';
+const VERSION = '0.2.63';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -1825,18 +1825,21 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
 
 // ─── Tips Generator ───────────────────────────────────────────────────────────
 const TipsGenerator = ({ showToast, onBack }) => {
-  const [cities, setCities]           = useState({});
+  const [cities, setCities]             = useState({});
   const [loadingCities, setLoadingCities] = useState(true);
-  const [selectedKey, setSelectedKey] = useState('');
-  const [tips, setTips]               = useState(null);
-  const [loadingTips, setLoadingTips] = useState(false);
-  const [generating, setGenerating]   = useState(false);
-  const [error, setError]             = useState('');
+  const [selectedKey, setSelectedKey]   = useState('');
+  const [savedTips, setSavedTips]       = useState(null);   // what's in Firebase
+  const [draftTips, setDraftTips]       = useState(null);   // unsaved working copy
+  const [loadingTips, setLoadingTips]   = useState(false);
+  const [generating, setGenerating]     = useState(false);
+  const [saving, setSaving]             = useState(false);
+  const [error, setError]               = useState('');
+  const [editingIdx, setEditingIdx]     = useState(null);
   const [showKeyPanel, setShowKeyPanel] = useState(false);
-  const [tipsPrompt, setTipsPrompt]   = useState(getTipsPrompt);
-  const [tipProvider, setTipProvider] = useState(getProvider);
-  const [tipKey,      setTipKey]      = useState(() => getApiKey(getProvider()));
-  const [tipModel,    setTipModel]    = useState(() => getModel(getProvider()));
+  const [tipsPrompt, setTipsPrompt]     = useState(getTipsPrompt);
+  const [tipProvider, setTipProvider]   = useState(getProvider);
+  const [tipKey,      setTipKey]        = useState(() => getApiKey(getProvider()));
+  const [tipModel,    setTipModel]      = useState(() => getModel(getProvider()));
 
   const switchProvider = (p) => { setTipProvider(p); setTipKey(getApiKey(p)); setTipModel(getModel(p)); };
 
@@ -1848,13 +1851,14 @@ const TipsGenerator = ({ showToast, onBack }) => {
   }, []);
 
   useEffect(() => {
-    if (!selectedKey) { setTips(null); return; }
+    if (!selectedKey) { setSavedTips(null); setDraftTips(null); setEditingIdx(null); return; }
     const city = cities[selectedKey];
     if (!city) return;
     setLoadingTips(true);
+    setDraftTips(null); setEditingIdx(null);
     db.ref('cities/' + city.id + '/tips').once('value').then(snap => {
       const val = snap.val();
-      setTips(Array.isArray(val) ? val : []);
+      setSavedTips(Array.isArray(val) ? val : []);
     }).finally(() => setLoadingTips(false));
   }, [selectedKey, cities]);
 
@@ -1870,7 +1874,7 @@ const TipsGenerator = ({ showToast, onBack }) => {
   const generate = async () => {
     const city = cities[selectedKey];
     if (!city) return;
-    setError('');
+    setError(''); setEditingIdx(null);
     localStorage.setItem('foufou_ai_provider', tipProvider);
     localStorage.setItem('foufou_ai_key_' + tipProvider, tipKey.trim());
     localStorage.setItem('foufou_ai_model_' + tipProvider, tipModel.trim());
@@ -1892,13 +1896,35 @@ const TipsGenerator = ({ showToast, onBack }) => {
       setError('AI returned unexpected format. Try again.\nRaw: ' + (result || '').slice(0, 300));
       return;
     }
-    await db.ref('cities/' + city.id + '/tips').set(arr);
-    setTips(arr);
-    showToast('Generated ' + arr.length + ' tips for ' + (city.nameEn || city.name), 'success');
+    setDraftTips(arr);
+  };
+
+  const saveToFirebase = async () => {
+    const city = cities[selectedKey];
+    if (!city || !draftTips) return;
+    setSaving(true);
+    await db.ref('cities/' + city.id + '/tips').set(draftTips);
+    setSavedTips(draftTips);
+    setDraftTips(null);
+    setEditingIdx(null);
+    setSaving(false);
+    showToast('Saved ' + draftTips.length + ' tips for ' + (city.nameEn || city.name), 'success');
+  };
+
+  const updateDraftTip = (i, field, val) => {
+    setDraftTips(prev => prev.map((t, idx) => idx === i ? { ...t, [field]: val } : t));
+  };
+
+  const deleteDraftTip = (i) => {
+    setDraftTips(prev => prev.filter((_, idx) => idx !== i));
+    if (editingIdx === i) setEditingIdx(null);
+    else if (editingIdx > i) setEditingIdx(editingIdx - 1);
   };
 
   const sorted = Object.entries(cities).sort((a, b) => (a[1].nameEn || '').localeCompare(b[1].nameEn || ''));
   const selectedCity = selectedKey ? cities[selectedKey] : null;
+  const displayTips = draftTips !== null ? draftTips : savedTips;
+  const isDraft = draftTips !== null;
 
   return (
     <div style={{ minHeight:'100vh', background:'#f8fafc' }}>
@@ -1977,6 +2003,8 @@ const TipsGenerator = ({ showToast, onBack }) => {
 
       {/* Content */}
       <div style={{ maxWidth:760, margin:'0 auto', padding:'32px 24px' }}>
+
+        {/* City picker */}
         <div style={{ marginBottom:28 }}>
           <label style={{ fontSize:13, fontWeight:700, color:'#334155', display:'block', marginBottom:8 }}>
             Select a city
@@ -1997,15 +2025,35 @@ const TipsGenerator = ({ showToast, onBack }) => {
 
         {selectedCity && (
           <>
-            <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:24 }}>
+            {/* Action bar */}
+            <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:20, flexWrap:'wrap' }}>
               <button onClick={generate} disabled={generating}
                 style={{ padding:'10px 24px', background: generating ? '#a5b4fc' : '#6366f1',
                   color:'white', border:'none', borderRadius:10, fontSize:14, fontWeight:'bold',
                   cursor: generating ? 'default' : 'pointer' }}>
-                {generating ? '⏳ Generating...' : (tips && tips.length ? '🔄 Regenerate tips' : '✨ Generate tips')}
+                {generating ? '⏳ Generating...' : (savedTips && savedTips.length ? '🔄 Regenerate' : '✨ Generate tips')}
               </button>
-              {tips && tips.length > 0 && (
-                <span style={{ fontSize:13, color:'#64748b' }}>{tips.length} tips saved</span>
+
+              {isDraft && (
+                <>
+                  <button onClick={saveToFirebase} disabled={saving}
+                    style={{ padding:'10px 24px', background: saving ? '#86efac' : '#10b981',
+                      color:'white', border:'none', borderRadius:10, fontSize:14, fontWeight:'bold',
+                      cursor: saving ? 'default' : 'pointer' }}>
+                    {saving ? 'Saving...' : '💾 Save to Firebase'}
+                  </button>
+                  <button onClick={() => { setDraftTips(null); setEditingIdx(null); }}
+                    style={{ padding:'10px 16px', background:'white', color:'#64748b',
+                      border:'1px solid #e2e8f0', borderRadius:10, fontSize:13, cursor:'pointer' }}>
+                    Discard
+                  </button>
+                  <span style={{ fontSize:12, color:'#f59e0b', fontWeight:600 }}>
+                    ● {draftTips.length} tips — not saved yet
+                  </span>
+                </>
+              )}
+              {!isDraft && savedTips && savedTips.length > 0 && (
+                <span style={{ fontSize:13, color:'#64748b' }}>{savedTips.length} tips saved ✓</span>
               )}
             </div>
 
@@ -2018,28 +2066,71 @@ const TipsGenerator = ({ showToast, onBack }) => {
 
             {loadingTips ? (
               <div style={{ color:'#94a3b8', fontSize:13 }}>Loading tips...</div>
-            ) : tips && tips.length > 0 ? (
-              <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-                {tips.map((tip, i) => (
-                  <div key={i} style={{ background:'white', borderRadius:12, border:'1px solid #e2e8f0',
-                    padding:'14px 18px' }}>
-                    <div style={{ display:'flex', gap:10, alignItems:'flex-start' }}>
-                      <span style={{ fontSize:11, fontWeight:700, color:'#6366f1', minWidth:22, paddingTop:2 }}>
-                        {i + 1}
-                      </span>
-                      <div style={{ flex:1 }}>
-                        <div style={{ fontSize:14, color:'#1e293b', lineHeight:1.6, marginBottom:4 }}>
-                          {tip.tipEn}
+            ) : displayTips && displayTips.length > 0 ? (
+              <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                {displayTips.map((tip, i) => (
+                  <div key={i} style={{ background:'white', borderRadius:12,
+                    border:'1px solid ' + (isDraft ? '#c7d2fe' : '#e2e8f0'), padding:'14px 18px' }}>
+                    {editingIdx === i && isDraft ? (
+                      /* Edit mode */
+                      <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                        <div style={{ fontSize:11, fontWeight:700, color:'#6366f1', marginBottom:2 }}>
+                          #{i+1} — English
                         </div>
-                        <div style={{ fontSize:12, color:'#94a3b8', direction:'rtl', textAlign:'right', lineHeight:1.6 }}>
-                          {tip.tip}
+                        <textarea value={tip.tipEn}
+                          onChange={e => updateDraftTip(i, 'tipEn', e.target.value)}
+                          rows={3} spellCheck={false}
+                          style={{ width:'100%', padding:'8px 10px', border:'1px solid #c7d2fe',
+                            borderRadius:8, fontSize:13, lineHeight:1.6, resize:'vertical',
+                            outline:'none', boxSizing:'border-box' }} />
+                        <div style={{ fontSize:11, fontWeight:700, color:'#94a3b8', marginBottom:2 }}>
+                          Hebrew
+                        </div>
+                        <textarea value={tip.tip}
+                          onChange={e => updateDraftTip(i, 'tip', e.target.value)}
+                          rows={3} spellCheck={false} dir="rtl"
+                          style={{ width:'100%', padding:'8px 10px', border:'1px solid #e2e8f0',
+                            borderRadius:8, fontSize:13, lineHeight:1.6, resize:'vertical',
+                            outline:'none', boxSizing:'border-box' }} />
+                        <div style={{ display:'flex', gap:8 }}>
+                          <button onClick={() => setEditingIdx(null)}
+                            style={{ padding:'5px 14px', fontSize:12, background:'#6366f1', color:'white',
+                              border:'none', borderRadius:8, cursor:'pointer', fontWeight:600 }}>Done</button>
+                          <button onClick={() => deleteDraftTip(i)}
+                            style={{ padding:'5px 14px', fontSize:12, background:'white', color:'#ef4444',
+                              border:'1px solid #fca5a5', borderRadius:8, cursor:'pointer' }}>Delete tip</button>
                         </div>
                       </div>
-                    </div>
+                    ) : (
+                      /* View mode */
+                      <div style={{ display:'flex', gap:10, alignItems:'flex-start' }}>
+                        <span style={{ fontSize:11, fontWeight:700, color:'#6366f1', minWidth:22, paddingTop:3 }}>
+                          {i+1}
+                        </span>
+                        <div style={{ flex:1 }}>
+                          <div style={{ fontSize:14, color:'#1e293b', lineHeight:1.6, marginBottom:4 }}>
+                            {tip.tipEn}
+                          </div>
+                          <div style={{ fontSize:12, color:'#94a3b8', direction:'rtl', textAlign:'right', lineHeight:1.6 }}>
+                            {tip.tip}
+                          </div>
+                        </div>
+                        {isDraft && (
+                          <div style={{ display:'flex', gap:6, flexShrink:0 }}>
+                            <button onClick={() => setEditingIdx(i)}
+                              style={{ fontSize:11, padding:'3px 10px', borderRadius:6, border:'1px solid #c7d2fe',
+                                background:'#eef2ff', color:'#6366f1', cursor:'pointer' }}>Edit</button>
+                            <button onClick={() => deleteDraftTip(i)}
+                              style={{ fontSize:11, padding:'3px 8px', borderRadius:6, border:'1px solid #fca5a5',
+                                background:'white', color:'#ef4444', cursor:'pointer' }}>✕</button>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
-            ) : tips !== null ? (
+            ) : displayTips !== null && !loadingTips ? (
               <div style={{ textAlign:'center', padding:'48px 0', color:'#94a3b8', fontSize:14 }}>
                 No tips yet — click Generate to create them with AI
               </div>
