@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.61';
+const VERSION = '0.2.62';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -50,6 +50,41 @@ Neighborhoods:
 
 Return ONLY the JSON array. No explanation, no markdown, just the array.`;
 const getPrompt = () => localStorage.getItem('foufou_ai_prompt') || DEFAULT_PROMPT;
+
+// ─── Tips generation prompt ───────────────────────────────────────────────────
+const DEFAULT_TIPS_PROMPT = `City: {cityName}
+
+You are a seasoned traveler writing practical insider tips for a tourist app.
+Study the Bangkok example below — match its tone, detail level, and topic range exactly.
+
+Return a JSON array of 15-20 tips:
+[{"tipEn": "English tip text", "tip": "Hebrew translation of tipEn"}, ...]
+
+Return ONLY the JSON array. No markdown, no explanation.
+
+--- EXAMPLE (Bangkok) ---
+- Bangkok is a relatively safe city, even for women — safe to walk around in all areas, day and night. In dense tourist areas there may be pickpockets, as in any city, but this is not a representative phenomenon.
+- In Bangkok everything mixes and everything is together: temples next to massage parlors, food stalls next to fancy restaurants, new next to old. That's the beauty of the city.
+- With all the seeming chaos, the city is very clean. It is customary to give waste to the food stalls in the city.
+- The city accepts and does not push — pleasant to walk around and calm. The people are kind and polite.
+- The city is different in the morning and in the evening; the same street looks different during the day and at night.
+- It is interesting to visit the morning markets, but you must go to the evening and night markets.
+- Driving is on the left. There is no right of way for pedestrians — blend in gently but assertively. Pay attention to scooters, they do not respect traffic laws.
+- Car traffic is very dense and slow, including taxis. Travel by subway and light rail — comfortable, cheap, air-conditioned and modern.
+- It is possible and acceptable to use scooters as taxis. The slow traffic makes it less scary than it sounds; tourists and locals use the service a lot — cheap and efficient. (They don't always have a helmet for the passenger.)
+- Riding a tuk tuk is a nice one-time tourist experience, but it costs more than any alternative, is not air-conditioned, and does not avoid traffic jams like a scooter.
+- Highly recommended: install Grab or Bolt and order a taxi or scooter — prices are uniform and fair.
+- A very unique way to get around is to cruise the inner canals on a public boat (not a tourist cruise). Worth a try.
+- There are no bicycle paths — do not cycle on the roads. You can ride in the parks.
+- There are no running tracks in the city; it is common to run in the big parks in the late afternoon.
+- Getting around with a stroller can be complicated due to the quality of the sidewalks.
+- The quantity, quality and diversity of Bangkok's shopping malls are among the most beautiful in the world — an experience in itself. Arrive with free space in your luggage.
+- It is acceptable to make orders with delivery, even for small things.
+- Avoid March–April (very hot and humid) and July–August (very rainy).
+--- END EXAMPLE ---
+
+Now generate tips for: {cityName}`;
+const getTipsPrompt = () => localStorage.getItem('foufou_tips_prompt') || DEFAULT_TIPS_PROMPT;
 
 // ─── Area generation prompts ──────────────────────────────────────────────────
 // AUTO: AI decides count and naming style based on city knowledge
@@ -1788,13 +1823,241 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
   );
 };
 
+// ─── Tips Generator ───────────────────────────────────────────────────────────
+const TipsGenerator = ({ showToast, onBack }) => {
+  const [cities, setCities]           = useState({});
+  const [loadingCities, setLoadingCities] = useState(true);
+  const [selectedKey, setSelectedKey] = useState('');
+  const [tips, setTips]               = useState(null);
+  const [loadingTips, setLoadingTips] = useState(false);
+  const [generating, setGenerating]   = useState(false);
+  const [error, setError]             = useState('');
+  const [showKeyPanel, setShowKeyPanel] = useState(false);
+  const [tipsPrompt, setTipsPrompt]   = useState(getTipsPrompt);
+  const [tipProvider, setTipProvider] = useState(getProvider);
+  const [tipKey,      setTipKey]      = useState(() => getApiKey(getProvider()));
+  const [tipModel,    setTipModel]    = useState(() => getModel(getProvider()));
+
+  const switchProvider = (p) => { setTipProvider(p); setTipKey(getApiKey(p)); setTipModel(getModel(p)); };
+
+  useEffect(() => {
+    db.ref('settings/cityRegistry').once('value').then(snap => {
+      setCities(snap.val() || {});
+      setLoadingCities(false);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!selectedKey) { setTips(null); return; }
+    const city = cities[selectedKey];
+    if (!city) return;
+    setLoadingTips(true);
+    db.ref('cities/' + city.id + '/tips').once('value').then(snap => {
+      const val = snap.val();
+      setTips(Array.isArray(val) ? val : []);
+    }).finally(() => setLoadingTips(false));
+  }, [selectedKey, cities]);
+
+  const saveAiSettings = () => {
+    localStorage.setItem('foufou_ai_provider', tipProvider);
+    localStorage.setItem('foufou_ai_key_' + tipProvider, tipKey.trim());
+    localStorage.setItem('foufou_ai_model_' + tipProvider, tipModel.trim());
+    localStorage.setItem('foufou_tips_prompt', tipsPrompt);
+    setShowKeyPanel(false);
+    showToast('AI settings saved (' + AI_PROVIDERS[tipProvider].name + ')', 'success');
+  };
+
+  const generate = async () => {
+    const city = cities[selectedKey];
+    if (!city) return;
+    setError('');
+    localStorage.setItem('foufou_ai_provider', tipProvider);
+    localStorage.setItem('foufou_ai_key_' + tipProvider, tipKey.trim());
+    localStorage.setItem('foufou_ai_model_' + tipProvider, tipModel.trim());
+    setGenerating(true);
+    const prompt = tipsPrompt.replace(/\{cityName\}/g, city.nameEn || city.name);
+    const result = await callAI(prompt, 8192);
+    setGenerating(false);
+    if (result && result.error) { setError(result.error); return; }
+    let arr = null;
+    try {
+      const stripped = (result || '').replace(/```[a-z]*/g, '').replace(/```/g, '').trim();
+      try { arr = JSON.parse(stripped); } catch(e) {}
+      if (!Array.isArray(arr)) {
+        const m = (result || '').match(/\[\s*\{[\s\S]*\}\s*\]/);
+        if (m) try { arr = JSON.parse(m[0]); } catch(e) {}
+      }
+    } catch(e) {}
+    if (!Array.isArray(arr) || !arr.length) {
+      setError('AI returned unexpected format. Try again.\nRaw: ' + (result || '').slice(0, 300));
+      return;
+    }
+    await db.ref('cities/' + city.id + '/tips').set(arr);
+    setTips(arr);
+    showToast('Generated ' + arr.length + ' tips for ' + (city.nameEn || city.name), 'success');
+  };
+
+  const sorted = Object.entries(cities).sort((a, b) => (a[1].nameEn || '').localeCompare(b[1].nameEn || ''));
+  const selectedCity = selectedKey ? cities[selectedKey] : null;
+
+  return (
+    <div style={{ minHeight:'100vh', background:'#f8fafc' }}>
+      {/* Header */}
+      <div style={{ background:'white', borderBottom:'1px solid #e2e8f0', padding:'14px 24px',
+        display:'flex', alignItems:'center', justifyContent:'space-between',
+        position:'sticky', top:0, zIndex:10, boxShadow:'0 1px 4px rgba(0,0,0,0.06)' }}>
+        <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+          <button onClick={onBack}
+            style={{ fontSize:13, color:'#6366f1', background:'none', border:'none',
+              cursor:'pointer', fontWeight:600 }}>← Dashboard</button>
+          <div style={{ width:1, height:20, background:'#e2e8f0' }} />
+          <span style={{ fontSize:22 }}>💡</span>
+          <div>
+            <div style={{ fontWeight:'bold', color:'#1e293b', fontSize:16, lineHeight:1.2 }}>Tips Generator</div>
+            <div style={{ fontSize:11, color:'#94a3b8' }}>v{VERSION}</div>
+          </div>
+        </div>
+        <button onClick={() => setShowKeyPanel(v => !v)}
+          style={{ fontSize:12, padding:'5px 10px', borderRadius:8, border:'1px solid #e2e8f0',
+            background: tipKey ? '#f0fdf4' : '#fef3c7', cursor:'pointer',
+            color: tipKey ? '#16a34a' : '#d97706' }}>
+          {tipKey ? '🔑 AI ✓' : '🔑 AI Key'}
+        </button>
+      </div>
+
+      {/* AI settings panel */}
+      {showKeyPanel && (
+        <div style={{ background:'#fefce8', borderBottom:'1px solid #fde68a', padding:'12px 24px' }}>
+          <div style={{ maxWidth:900, margin:'0 auto', display:'flex', flexDirection:'column', gap:10 }}>
+            <div style={{ display:'flex', gap:6 }}>
+              {Object.entries(AI_PROVIDERS).map(([id, p]) => (
+                <button key={id} onClick={() => switchProvider(id)}
+                  style={{ padding:'4px 14px', fontSize:12, fontWeight:600, borderRadius:20,
+                    border:'1px solid ' + (tipProvider===id ? '#d97706' : '#e2e8f0'),
+                    background: tipProvider===id ? '#fef3c7' : 'white',
+                    color: tipProvider===id ? '#92400e' : '#64748b', cursor:'pointer' }}>
+                  {p.name} {getApiKey(id) ? '✓' : ''} {p.free ? '(free)':''}
+                </button>
+              ))}
+            </div>
+            <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+              <span style={{ fontSize:12, fontWeight:700, color:'#92400e', minWidth:30 }}>Key</span>
+              <input value={tipKey} onChange={e => setTipKey(e.target.value)} type="password"
+                placeholder={AI_PROVIDERS[tipProvider].keyHint}
+                style={{ flex:2, minWidth:200, padding:'6px 10px', border:'1px solid #fcd34d',
+                  borderRadius:8, fontSize:12, fontFamily:'monospace', outline:'none', background:'white' }} />
+              <span style={{ fontSize:12, fontWeight:700, color:'#92400e' }}>Model</span>
+              <input value={tipModel} onChange={e => setTipModel(e.target.value)}
+                style={{ flex:1, minWidth:140, padding:'6px 10px', border:'1px solid #fcd34d',
+                  borderRadius:8, fontSize:12, fontFamily:'monospace', outline:'none', background:'white' }} />
+              <a href={AI_PROVIDERS[tipProvider].keyUrl} target="_blank" rel="noreferrer"
+                style={{ fontSize:11, color:'#92400e', whiteSpace:'nowrap' }}>Get key ↗</a>
+            </div>
+            <div style={{ display:'flex', alignItems:'flex-start', gap:8 }}>
+              <span style={{ fontSize:12, fontWeight:700, color:'#92400e', minWidth:50, paddingTop:4 }}>Prompt</span>
+              <textarea value={tipsPrompt} onChange={e => setTipsPrompt(e.target.value)}
+                rows={14} spellCheck={false}
+                style={{ flex:1, padding:'8px 10px', border:'1px solid #fcd34d', borderRadius:8,
+                  fontSize:12, fontFamily:'monospace', outline:'none', resize:'vertical', lineHeight:1.5 }} />
+            </div>
+            <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+              <button onClick={() => setTipsPrompt(DEFAULT_TIPS_PROMPT)}
+                style={{ padding:'6px 14px', fontSize:12, background:'white', border:'1px solid #fcd34d',
+                  borderRadius:8, cursor:'pointer', color:'#92400e' }}>Reset prompt</button>
+              <button onClick={() => setShowKeyPanel(false)}
+                style={{ padding:'6px 14px', fontSize:12, background:'white', border:'1px solid #e2e8f0',
+                  borderRadius:8, cursor:'pointer', color:'#64748b' }}>Cancel</button>
+              <button onClick={saveAiSettings}
+                style={{ padding:'6px 14px', fontSize:12, background:'#d97706', color:'white',
+                  border:'none', borderRadius:8, cursor:'pointer', fontWeight:'bold' }}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Content */}
+      <div style={{ maxWidth:760, margin:'0 auto', padding:'32px 24px' }}>
+        <div style={{ marginBottom:28 }}>
+          <label style={{ fontSize:13, fontWeight:700, color:'#334155', display:'block', marginBottom:8 }}>
+            Select a city
+          </label>
+          {loadingCities ? (
+            <div style={{ color:'#94a3b8', fontSize:13 }}>Loading cities...</div>
+          ) : (
+            <select value={selectedKey} onChange={e => setSelectedKey(e.target.value)}
+              style={{ padding:'10px 14px', border:'2px solid #6366f1', borderRadius:10, fontSize:14,
+                color:'#1e293b', background:'white', cursor:'pointer', outline:'none', minWidth:240 }}>
+              <option value="">— pick a city —</option>
+              {sorted.map(([key, city]) => (
+                <option key={key} value={key}>{city.nameEn || city.name}</option>
+              ))}
+            </select>
+          )}
+        </div>
+
+        {selectedCity && (
+          <>
+            <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:24 }}>
+              <button onClick={generate} disabled={generating}
+                style={{ padding:'10px 24px', background: generating ? '#a5b4fc' : '#6366f1',
+                  color:'white', border:'none', borderRadius:10, fontSize:14, fontWeight:'bold',
+                  cursor: generating ? 'default' : 'pointer' }}>
+                {generating ? '⏳ Generating...' : (tips && tips.length ? '🔄 Regenerate tips' : '✨ Generate tips')}
+              </button>
+              {tips && tips.length > 0 && (
+                <span style={{ fontSize:13, color:'#64748b' }}>{tips.length} tips saved</span>
+              )}
+            </div>
+
+            {error && (
+              <div style={{ background:'#fef2f2', border:'1px solid #fca5a5', borderRadius:10,
+                padding:'12px 16px', marginBottom:20, fontSize:13, color:'#dc2626', whiteSpace:'pre-wrap' }}>
+                {error}
+              </div>
+            )}
+
+            {loadingTips ? (
+              <div style={{ color:'#94a3b8', fontSize:13 }}>Loading tips...</div>
+            ) : tips && tips.length > 0 ? (
+              <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+                {tips.map((tip, i) => (
+                  <div key={i} style={{ background:'white', borderRadius:12, border:'1px solid #e2e8f0',
+                    padding:'14px 18px' }}>
+                    <div style={{ display:'flex', gap:10, alignItems:'flex-start' }}>
+                      <span style={{ fontSize:11, fontWeight:700, color:'#6366f1', minWidth:22, paddingTop:2 }}>
+                        {i + 1}
+                      </span>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontSize:14, color:'#1e293b', lineHeight:1.6, marginBottom:4 }}>
+                          {tip.tipEn}
+                        </div>
+                        <div style={{ fontSize:12, color:'#94a3b8', direction:'rtl', textAlign:'right', lineHeight:1.6 }}>
+                          {tip.tip}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : tips !== null ? (
+              <div style={{ textAlign:'center', padding:'48px 0', color:'#94a3b8', fontSize:14 }}>
+                No tips yet — click Generate to create them with AI
+              </div>
+            ) : null}
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 const SECTIONS = [
   { id:'cities',    icon:'🏙️', title:'City Builder',        color:'#10b981', ready:true,
     desc:'Create and edit cities — define areas, boundaries, names and characteristics.' },
   { id:'favorites', icon:'⭐', title:'Favorites Generator',  color:'#f59e0b', ready:false,
     desc:'AI agent adds 5 curated places per area per interest using Google Places.' },
-  { id:'tips',      icon:'💡', title:'Tips Generator',       color:'#6366f1', ready:false,
+  { id:'tips',      icon:'💡', title:'Tips Generator',       color:'#6366f1', ready:true,
     desc:'Generate practical tourist tips for each city, like the Bangkok tips in FouFou.' },
   { id:'trails',    icon:'🗺️', title:'Trail Generator',      color:'#ec4899', ready:false,
     desc:'Generate 2 recommended saved trails per area per city.' },
@@ -2092,6 +2355,10 @@ const FouFouBuild = () => {
             onEditCity={(key, entry) => { setEditingCity({ key, entry }); setView('edit-city'); }}
           />
         </>
+      )}
+
+      {view === 'tips' && (
+        <TipsGenerator showToast={showToast} onBack={() => setView('dashboard')} />
       )}
 
       {view === 'add-city' && (
