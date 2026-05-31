@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.64';
+const VERSION = '0.2.65';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -1856,9 +1856,15 @@ const TipsGenerator = ({ showToast, onBack }) => {
     if (!city) return;
     setLoadingTips(true);
     setDraftTips(null); setEditingIdx(null);
-    db.ref('cities/' + city.id + '/tips').once('value').then(snap => {
+    db.ref('helpContent/hint_city_' + city.id).once('value').then(snap => {
       const val = snap.val();
-      setSavedTips(Array.isArray(val) ? val : []);
+      if (val && val.en) {
+        const enLines = val.en.split('\n').map(l => l.replace(/^- /, '').trim()).filter(Boolean);
+        const heLines = (val.he || '').split('\n').map(l => l.replace(/^- /, '').trim()).filter(Boolean);
+        setSavedTips(enLines.map((tipEn, i) => ({ tipEn, tip: heLines[i] || '' })));
+      } else {
+        setSavedTips([]);
+      }
     }).finally(() => setLoadingTips(false));
   }, [selectedKey, cities]);
 
@@ -1905,10 +1911,7 @@ const TipsGenerator = ({ showToast, onBack }) => {
     setSaving(true);
     const enBlob = draftTips.map(t => '- ' + t.tipEn).join('\n');
     const heBlob = draftTips.map(t => '- ' + t.tip).join('\n');
-    await Promise.all([
-      db.ref('cities/' + city.id + '/tips').set(draftTips),
-      db.ref('helpContent/hint_city_' + city.id).set({ en: enBlob, he: heBlob }),
-    ]);
+    await db.ref('helpContent/hint_city_' + city.id).set({ en: enBlob, he: heBlob });
     setSavedTips(draftTips);
     setDraftTips(null);
     setEditingIdx(null);
