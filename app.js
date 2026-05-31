@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.63';
+const VERSION = '0.2.64';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -1903,7 +1903,12 @@ const TipsGenerator = ({ showToast, onBack }) => {
     const city = cities[selectedKey];
     if (!city || !draftTips) return;
     setSaving(true);
-    await db.ref('cities/' + city.id + '/tips').set(draftTips);
+    const enBlob = draftTips.map(t => '- ' + t.tipEn).join('\n');
+    const heBlob = draftTips.map(t => '- ' + t.tip).join('\n');
+    await Promise.all([
+      db.ref('cities/' + city.id + '/tips').set(draftTips),
+      db.ref('helpContent/hint_city_' + city.id).set({ en: enBlob, he: heBlob }),
+    ]);
     setSavedTips(draftTips);
     setDraftTips(null);
     setEditingIdx(null);
