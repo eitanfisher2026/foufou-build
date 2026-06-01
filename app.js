@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.67';
+const VERSION = '0.2.68';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -2127,7 +2127,9 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
                         style={{ padding:'6px 12px', borderRadius:20, fontSize:12, fontWeight:600, cursor:'pointer',
                           border:'1px solid '+(on?'#f59e0b':'#e2e8f0'),
                           background: on?'#fef3c7':'white', color: on?'#92400e':'#94a3b8' }}>
-                        {interest.icon||'📍'} {interest.labelEn}
+                        {interest.icon?.startsWith('data:') || interest.icon?.startsWith('http')
+          ? <img src={interest.icon} alt="" style={{ height:'1em', width:'1em', verticalAlign:'middle', objectFit:'contain', marginRight:2 }} />
+          : (interest.icon || '📍')}{' '}{interest.labelEn}
                       </button>
                     );
                   })}
