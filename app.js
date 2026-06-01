@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.70';
+const VERSION = '0.2.71';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -1964,7 +1964,8 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
     const all = []; let filtered = 0;
     for (let i = 0; i < toRun.length; i++) {
       const interest = toRun[i];
-      setGenProgress(`${interest.icon || ''} ${interest.labelEn} (${i + 1}/${toRun.length})`);
+      const iconText = interest.icon && !interest.icon.startsWith('data:') && !interest.icon.startsWith('http') ? interest.icon + ' ' : '';
+      setGenProgress(`${iconText}${interest.labelEn} (${i + 1}/${toRun.length})`);
       const examples = await getBangkokExamples(interest.id);
       const prompt = favPrompt
         .replace(/\{cityName\}/g, city.nameEn || city.name)
@@ -2225,7 +2226,9 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
             {interestsInDraft.map(interest => (
               <div key={interest.id} style={{ marginBottom:28 }}>
                 <div style={{ fontSize:13, fontWeight:700, color:'#92400e', marginBottom:8, display:'flex', alignItems:'center', gap:6 }}>
-                  {interest.icon} {interest.labelEn}
+                  {interest.icon?.startsWith('data:') || interest.icon?.startsWith('http')
+                    ? <img src={interest.icon} alt="" style={{ height:'1em', width:'1em', verticalAlign:'middle', objectFit:'contain' }} />
+                    : (interest.icon || '')} {interest.labelEn}
                   <span style={{ fontSize:11, color:'#94a3b8', fontWeight:400 }}>
                     ({draftPlaces.filter(p => p._iid===interest.id).length} places)
                   </span>
