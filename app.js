@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.73';
+const VERSION = '0.2.74';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -103,7 +103,7 @@ Quality rules:
 - ~70% hidden gems: a knowledgeable local would recommend these to a friend — not the first Google result
 - No obvious tourist traps or generic landmarks
 - Only real, verifiable places with accurate GPS coordinates
-- Only include places that are currently open and operational — exclude any place known to be closed or permanently shut
+- Exclude any place known to be permanently closed or temporarily shut down — only include places that are still operating
 - nameEn: official English name of the place (English only, no transliteration)
 - descEn: 6-10 words capturing the vibe, like a personal recommendation from someone who's been there
 
@@ -2040,6 +2040,27 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
     if (editingIdx===i) setEditingIdx(null); else if (editingIdx>i) setEditingIdx(editingIdx-1);
   };
 
+  const runIdMigration = async () => {
+    const allCities = Object.values(cities);
+    let total = 0;
+    for (const city of allCities) {
+      const snap = await db.ref('cities/' + city.id + '/locations').once('value');
+      const locs = snap.val();
+      if (!locs) continue;
+      const updates = {};
+      Object.entries(locs).forEach(([key, loc], i) => {
+        if (loc.addedBy === 'ai-gen' && !loc.id) {
+          updates[key + '/id'] = Date.now() + i;
+          total++;
+        }
+      });
+      if (Object.keys(updates).length) {
+        await db.ref('cities/' + city.id + '/locations').update(updates);
+      }
+    }
+    showToast(total > 0 ? `Fixed id on ${total} ai-gen places` : 'No places needed fixing', 'success');
+  };
+
   const sortedCities = Object.entries(cities).sort((a,b) => (a[1].nameEn||'').localeCompare(b[1].nameEn||''));
   const selectedCity = selectedKey ? cities[selectedKey] : null;
   const selCount = Object.values(selInterests).filter(Boolean).length;
@@ -2140,6 +2161,14 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
               {sortedCities.map(([key, city]) => <option key={key} value={key}>{city.nameEn || city.name}</option>)}
             </select>
           )}
+        </div>
+
+        <div style={{ marginBottom:16 }}>
+          <button onClick={runIdMigration}
+            style={{ fontSize:11, padding:'4px 12px', borderRadius:6, border:'1px solid #e2e8f0',
+              background:'white', color:'#64748b', cursor:'pointer' }}>
+            🔧 Fix missing id on ai-gen places (all cities)
+          </button>
         </div>
 
         {selectedCity && draftPlaces === null && (
