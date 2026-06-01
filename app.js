@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.75';
+const VERSION = '0.2.76';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -1944,6 +1944,31 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
       .join('\n') || '(no Bangkok examples for this interest)';
   };
 
+  const lookupPlace = async (place) => {
+    try {
+      const resp = await fetch(PLACES_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': GOOGLE_KEY,
+          'X-Goog-FieldMask': 'places.id,places.businessStatus,places.rating,places.userRatingCount' },
+        body: JSON.stringify({
+          textQuery: place.nameEn,
+          locationBias: { circle: { center: { latitude: place.lat, longitude: place.lng }, radius: 300.0 } },
+          maxResultCount: 1,
+        })
+      });
+      const data = await resp.json();
+      const found = data.places?.[0];
+      if (!found) return { found: false };
+      return {
+        found: true,
+        status: found.businessStatus || 'OPERATIONAL',
+        rating: found.rating || null,
+        ratingCount: found.userRatingCount || 0,
+        placeId: found.id || null,
+      };
+    } catch(e) { return { found: false }; }
+  };
+
   const normName = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   const isDupe = (place, existing) => {
     const nn = normName(place.nameEn);
@@ -1963,7 +1988,7 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
     localStorage.setItem('foufou_ai_model_' + favProvider, favModel.trim());
     setGenerating(true); setGenError(''); setDraftPlaces([]); setEditingIdx(null);
     setFilteredCount(0);
-    const all = []; let filtered = 0;
+    const all = []; let filtered = 0; let closed = 0;
     const iconText = (i) => i.icon && !i.icon.startsWith('data:') && !i.icon.startsWith('http') ? i.icon + ' ' : '';
     for (let i = 0; i < toRun.length; i++) {
       const interest = toRun[i];
@@ -1993,10 +2018,20 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
         return true;
       });
 
-      // Step 3: area assignment
+      // Step 3: Google lookup — status + rating + placeId in one call
+      setGenProgress(`Verifying ${label}`);
       for (const p of candidates) {
+        const g = await lookupPlace(p);
+        if (g.found && (g.status === 'CLOSED_TEMPORARILY' || g.status === 'CLOSED_PERMANENTLY')) { closed++; continue; }
         const { areaId, areaName } = assignArea(p.lat, p.lng, cityAreas);
-        all.push({ ...p, _iid: interest.id, _iname: interest.labelEn, _iicon: interest.icon || '📍', _areaId: areaId, _areaName: areaName });
+        all.push({
+          ...p,
+          googleRating: g.rating || null,
+          googleRatingCount: g.ratingCount || 0,
+          googlePlaceId: g.placeId || null,
+          _iid: interest.id, _iname: interest.labelEn, _iicon: interest.icon || '📍',
+          _areaId: areaId, _areaName: areaName,
+        });
       }
       setDraftPlaces([...all]);
       setFilteredCount(filtered);
@@ -2004,8 +2039,9 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
     setGenerating(false); setGenProgress('');
     if (all.length) {
       const parts = [`Generated ${all.length} places`];
-      if (filtered) parts.push(`${filtered} duplicates filtered`);
-      showToast(parts.join(' · '), 'success');
+      if (filtered) parts.push(`${filtered} duplicates`);
+      if (closed) parts.push(`${closed} closed`);
+      showToast(parts.join(' · ') + ' filtered', 'success');
     }
   };
 
@@ -2024,6 +2060,9 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
         area: p._areaId || '', areas: p._areaId ? [p._areaId] : [],
         interests: [p._iid], status: 'active',
         addedBy: 'ai-gen', locked: true, aiGenerated: true,
+        googlePlaceId: p.googlePlaceId || null,
+        googleRating: p.googleRating || null,
+        googleRatingCount: p.googleRatingCount || 0,
       })
     ));
     setSaving(false);
@@ -2313,7 +2352,17 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
                         ) : (
                           <div style={{ display:'flex', gap:10, alignItems:'flex-start' }}>
                             <div style={{ flex:1, minWidth:0 }}>
-                              <div style={{ fontSize:14, fontWeight:600, color:'#1e293b' }}>{place.nameEn}</div>
+                              <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+                                <span style={{ fontSize:14, fontWeight:600, color:'#1e293b' }}>{place.nameEn}</span>
+                                {place.googleRating ? (
+                                  <span style={{ fontSize:12, color:'#f59e0b', fontWeight:700 }}>
+                                    ⭐ {place.googleRating.toFixed(1)}
+                                    <span style={{ fontSize:10, color:'#94a3b8', fontWeight:400 }}> ({(place.googleRatingCount||0).toLocaleString()})</span>
+                                  </span>
+                                ) : (
+                                  <span style={{ fontSize:10, color:'#94a3b8' }}>not on Google</span>
+                                )}
+                              </div>
                               <div style={{ fontSize:12, color:'#64748b', marginTop:2 }}>{place.descEn}</div>
                               <div style={{ display:'flex', alignItems:'center', gap:8, marginTop:4 }}>
                                 <span style={{ fontSize:11, color:'#94a3b8' }}>📍 {place._areaName || 'no area'}</span>
