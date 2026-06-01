@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.74';
+const VERSION = '0.2.75';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -103,7 +103,7 @@ Quality rules:
 - ~70% hidden gems: a knowledgeable local would recommend these to a friend — not the first Google result
 - No obvious tourist traps or generic landmarks
 - Only real, verifiable places with accurate GPS coordinates
-- Exclude any place known to be permanently closed or temporarily shut down — only include places that are still operating
+- Exclude any place known to be permanently closed or temporarily closed — only include places that are still operating
 - nameEn: official English name of the place (English only, no transliteration)
 - descEn: 6-10 words capturing the vibe, like a personal recommendation from someone who's been there
 
