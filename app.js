@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.68';
+const VERSION = '0.2.69';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -1888,11 +1888,24 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
     db.ref('settings/cityRegistry').once('value').then(snap => {
       setCities(snap.val() || {}); setLoadingCities(false);
     });
-    db.ref('customInterests').once('value').then(snap => {
-      const raw = snap.val() || {};
+    Promise.all([
+      db.ref('customInterests').once('value'),
+      db.ref('settings/interestGroups').once('value'),
+    ]).then(([intSnap, grpSnap]) => {
+      const raw = intSnap.val() || {};
+      const groups = grpSnap.val() || {};
+      const groupOrder = {};
+      Object.keys(groups).forEach((gId, idx) => {
+        groupOrder[gId] = groups[gId]?.order ?? idx;
+      });
       const list = Object.values(raw)
         .filter(i => i.locked === true && i.labelEn)
-        .sort((a, b) => (a.labelEn||'').localeCompare(b.labelEn||''));
+        .sort((a, b) => {
+          const ga = groupOrder[a.group || ''] ?? 99;
+          const gb = groupOrder[b.group || ''] ?? 99;
+          if (ga !== gb) return ga - gb;
+          return (a.labelEn || '').localeCompare(b.labelEn || '');
+        });
       setInterests(list);
       const sel = {}; list.forEach(i => { sel[i.id] = true; });
       setSelInterests(sel);
