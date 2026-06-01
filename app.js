@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.69';
+const VERSION = '0.2.70';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -2028,6 +2028,20 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
   const selCount = Object.values(selInterests).filter(Boolean).length;
   const interestsInDraft = interests.filter(i => draftPlaces && draftPlaces.some(p => p._iid === i.id));
 
+  const existingCountByInterest = React.useMemo(() => {
+    const counts = {};
+    existingPlaces.forEach(p => {
+      const arr = Array.isArray(p.interests) ? p.interests : Object.values(p.interests || {});
+      arr.forEach(iid => { counts[iid] = (counts[iid] || 0) + 1; });
+    });
+    return counts;
+  }, [existingPlaces]);
+
+  const [sortFewest, setSortFewest] = useState(false);
+  const sortedInterests = sortFewest
+    ? [...interests].sort((a, b) => (existingCountByInterest[a.id] || 0) - (existingCountByInterest[b.id] || 0))
+    : interests;
+
   return (
     <div style={{ minHeight:'100vh', background:'#f8fafc' }}>
       {/* Header */}
@@ -2124,25 +2138,42 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
                     style={{ width:50, padding:'4px 8px', border:'1px solid #e2e8f0', borderRadius:6, fontSize:13, textAlign:'center', outline:'none' }} />
                 </div>
               </div>
-              <div style={{ display:'flex', gap:6, marginBottom:10 }}>
+              <div style={{ display:'flex', gap:6, marginBottom:10, flexWrap:'wrap' }}>
                 <button onClick={() => { const s={}; interests.forEach(i=>{s[i.id]=true;}); setSelInterests(s); }}
                   style={{ fontSize:11, padding:'3px 10px', borderRadius:6, border:'1px solid #e2e8f0', background:'white', cursor:'pointer', color:'#64748b' }}>All</button>
                 <button onClick={() => setSelInterests({})}
                   style={{ fontSize:11, padding:'3px 10px', borderRadius:6, border:'1px solid #e2e8f0', background:'white', cursor:'pointer', color:'#64748b' }}>None</button>
+                {existingPlaces.length > 0 && (
+                  <button onClick={() => setSortFewest(v => !v)}
+                    style={{ fontSize:11, padding:'3px 10px', borderRadius:6, cursor:'pointer',
+                      border:'1px solid '+(sortFewest?'#f59e0b':'#e2e8f0'),
+                      background: sortFewest?'#fef3c7':'white',
+                      color: sortFewest?'#92400e':'#64748b' }}>
+                    {sortFewest ? '↑ Fewest first' : 'Sort by fewest'}
+                  </button>
+                )}
               </div>
               {loadingInterests ? <div style={{ color:'#94a3b8', fontSize:13 }}>Loading interests...</div> : (
                 <div style={{ display:'flex', flexWrap:'wrap', gap:7 }}>
-                  {interests.map(interest => {
+                  {sortedInterests.map(interest => {
                     const on = !!selInterests[interest.id];
+                    const cnt = existingCountByInterest[interest.id] || 0;
+                    const cntColor = cnt === 0 ? '#ef4444' : cnt < 5 ? '#f59e0b' : '#94a3b8';
                     return (
                       <button key={interest.id}
                         onClick={() => setSelInterests(prev => ({ ...prev, [interest.id]: !prev[interest.id] }))}
                         style={{ padding:'6px 12px', borderRadius:20, fontSize:12, fontWeight:600, cursor:'pointer',
                           border:'1px solid '+(on?'#f59e0b':'#e2e8f0'),
-                          background: on?'#fef3c7':'white', color: on?'#92400e':'#94a3b8' }}>
+                          background: on?'#fef3c7':'white', color: on?'#92400e':'#94a3b8',
+                          display:'flex', alignItems:'center', gap:4 }}>
                         {interest.icon?.startsWith('data:') || interest.icon?.startsWith('http')
-          ? <img src={interest.icon} alt="" style={{ height:'1em', width:'1em', verticalAlign:'middle', objectFit:'contain', marginRight:2 }} />
-          : (interest.icon || '📍')}{' '}{interest.labelEn}
+                          ? <img src={interest.icon} alt="" style={{ height:'1em', width:'1em', verticalAlign:'middle', objectFit:'contain' }} />
+                          : (interest.icon || '📍')}{' '}{interest.labelEn}
+                        {existingPlaces.length > 0 && (
+                          <span style={{ fontSize:10, fontWeight:700, color: on ? cntColor : cntColor, marginLeft:2 }}>
+                            ({cnt})
+                          </span>
+                        )}
                       </button>
                     );
                   })}
