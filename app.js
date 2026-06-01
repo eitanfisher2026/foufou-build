@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.71';
+const VERSION = '0.2.72';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -1869,6 +1869,7 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
   const [cityAreas, setCityAreas]         = useState([]);
   const [existingPlaces, setExistingPlaces] = useState([]);
   const [filteredCount, setFilteredCount] = useState(0);
+  const [closedCount, setClosedCount]     = useState(0);
   const [generating, setGenerating]       = useState(false);
   const [genProgress, setGenProgress]     = useState('');
   const [genError, setGenError]           = useState('');
@@ -1943,6 +1944,25 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
       .join('\n') || '(no Bangkok examples for this interest)';
   };
 
+  const checkBusinessStatus = async (place) => {
+    try {
+      const resp = await fetch(PLACES_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': GOOGLE_KEY,
+          'X-Goog-FieldMask': 'places.businessStatus,places.id' },
+        body: JSON.stringify({
+          textQuery: place.nameEn,
+          locationBias: { circle: { center: { latitude: place.lat, longitude: place.lng }, radius: 300.0 } },
+          maxResultCount: 1,
+        })
+      });
+      const data = await resp.json();
+      const found = data.places?.[0];
+      if (!found) return 'not_found';
+      return found.businessStatus || 'OPERATIONAL';
+    } catch(e) { return 'error'; }
+  };
+
   const normName = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   const isDupe = (place, existing) => {
     const nn = normName(place.nameEn);
@@ -1960,12 +1980,16 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
     localStorage.setItem('foufou_ai_provider', favProvider);
     localStorage.setItem('foufou_ai_key_' + favProvider, favKey.trim());
     localStorage.setItem('foufou_ai_model_' + favProvider, favModel.trim());
-    setGenerating(true); setGenError(''); setDraftPlaces([]); setEditingIdx(null); setFilteredCount(0);
-    const all = []; let filtered = 0;
+    setGenerating(true); setGenError(''); setDraftPlaces([]); setEditingIdx(null);
+    setFilteredCount(0); setClosedCount(0);
+    const all = []; let filtered = 0; let closed = 0;
+    const iconText = (i) => i.icon && !i.icon.startsWith('data:') && !i.icon.startsWith('http') ? i.icon + ' ' : '';
     for (let i = 0; i < toRun.length; i++) {
       const interest = toRun[i];
-      const iconText = interest.icon && !interest.icon.startsWith('data:') && !interest.icon.startsWith('http') ? interest.icon + ' ' : '';
-      setGenProgress(`${iconText}${interest.labelEn} (${i + 1}/${toRun.length})`);
+      const label = `${iconText(interest)}${interest.labelEn} (${i + 1}/${toRun.length})`;
+
+      // Step 1: AI generation
+      setGenProgress(`Generating ${label}`);
       const examples = await getBangkokExamples(interest.id);
       const prompt = favPrompt
         .replace(/\{cityName\}/g, city.nameEn || city.name)
@@ -1980,18 +2004,33 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
         try { arr = JSON.parse(s); } catch(e) {}
         if (!Array.isArray(arr)) { const m = (result||'').match(/\[\s*\{[\s\S]*?\}\s*\]/); if (m) try { arr = JSON.parse(m[0]); } catch(e) {} }
       } catch(e) {}
-      if (Array.isArray(arr)) {
-        arr.filter(p => p.nameEn && p.lat && p.lng).forEach(p => {
-          if (isDupe(p, existingPlaces) || isDupe(p, all)) { filtered++; return; }
-          const { areaId, areaName } = assignArea(p.lat, p.lng, cityAreas);
-          all.push({ ...p, _iid: interest.id, _iname: interest.labelEn, _iicon: interest.icon || '📍', _areaId: areaId, _areaName: areaName });
-        });
-        setDraftPlaces([...all]);
-        setFilteredCount(filtered);
+      if (!Array.isArray(arr)) continue;
+
+      // Step 2: dedup filter
+      const candidates = arr.filter(p => p.nameEn && p.lat && p.lng).filter(p => {
+        if (isDupe(p, existingPlaces) || isDupe(p, all)) { filtered++; return false; }
+        return true;
+      });
+
+      // Step 3: Google Places verification (business status)
+      setGenProgress(`Verifying ${label}`);
+      for (const p of candidates) {
+        const status = await checkBusinessStatus(p);
+        if (status === 'CLOSED_TEMPORARILY' || status === 'CLOSED_PERMANENTLY') { closed++; continue; }
+        const { areaId, areaName } = assignArea(p.lat, p.lng, cityAreas);
+        all.push({ ...p, _iid: interest.id, _iname: interest.labelEn, _iicon: interest.icon || '📍', _areaId: areaId, _areaName: areaName });
       }
+      setDraftPlaces([...all]);
+      setFilteredCount(filtered);
+      setClosedCount(closed);
     }
     setGenerating(false); setGenProgress('');
-    if (all.length) showToast(`Generated ${all.length} places (${filtered} duplicates filtered)`, 'success');
+    if (all.length) {
+      const parts = [`Generated ${all.length} places`];
+      if (filtered) parts.push(`${filtered} duplicates filtered`);
+      if (closed) parts.push(`${closed} closed removed`);
+      showToast(parts.join(' · '), 'success');
+    }
   };
 
   const saveToFirebase = async () => {
@@ -2219,7 +2258,11 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
                 <button onClick={() => { setDraftPlaces(null); setEditingIdx(null); }}
                   style={{ padding:'10px 16px', background:'white', color:'#64748b', border:'1px solid #e2e8f0', borderRadius:10, fontSize:13, cursor:'pointer' }}>Discard</button>
                 <span style={{ fontSize:12, color:'#f59e0b', fontWeight:600 }}>● {draftPlaces.length} places — not saved yet</span>
-                {filteredCount > 0 && <span style={{ fontSize:12, color:'#94a3b8' }}>{filteredCount} duplicates filtered out</span>}
+                {(filteredCount > 0 || closedCount > 0) && (
+                  <span style={{ fontSize:12, color:'#94a3b8' }}>
+                    {[filteredCount && `${filteredCount} duplicates`, closedCount && `${closedCount} closed`].filter(Boolean).join(' · ')} filtered out
+                  </span>
+                )}
               </>}
             </div>
 
