@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.66';
+const VERSION = '0.2.67';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -103,11 +103,11 @@ Quality rules:
 - ~70% hidden gems: a knowledgeable local would recommend these to a friend — not the first Google result
 - No obvious tourist traps or generic landmarks
 - Only real, verifiable places with accurate GPS coordinates
+- nameEn: official English name of the place (English only, no transliteration)
 - descEn: 6-10 words capturing the vibe, like a personal recommendation from someone who's been there
-- name: Hebrew name or transliteration
 
 Return ONLY a JSON array, no markdown:
-[{"nameEn":"English name","name":"Hebrew name","descEn":"6-10 word vibe","desc":"Hebrew translation of descEn","lat":0.0000,"lng":0.0000}]`;
+[{"nameEn":"English name","descEn":"6-10 word vibe","lat":0.0000,"lng":0.0000}]`;
 const getFavoritesPrompt = () => localStorage.getItem('foufou_favorites_prompt') || DEFAULT_FAVORITES_PROMPT;
 
 // ─── Area generation prompts ──────────────────────────────────────────────────
@@ -1867,6 +1867,8 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
   const [selInterests, setSelInterests]   = useState({});
   const [countPer, setCountPer]           = useState(8);
   const [cityAreas, setCityAreas]         = useState([]);
+  const [existingPlaces, setExistingPlaces] = useState([]);
+  const [filteredCount, setFilteredCount] = useState(0);
   const [generating, setGenerating]       = useState(false);
   const [genProgress, setGenProgress]     = useState('');
   const [genError, setGenError]           = useState('');
@@ -1899,7 +1901,7 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
   }, []);
 
   useEffect(() => {
-    if (!selectedKey) { setCityAreas([]); return; }
+    if (!selectedKey) { setCityAreas([]); setExistingPlaces([]); return; }
     const city = cities[selectedKey];
     if (!city) return;
     db.ref('cities/' + city.id + '/config/areas').once('value').then(snap => {
@@ -1907,6 +1909,10 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
       if (!val) { setCityAreas([]); return; }
       const arr = Array.isArray(val) ? val : Object.values(val);
       setCityAreas(arr.filter(a => a && a.lat && a.lng));
+    });
+    db.ref('cities/' + city.id + '/locations').once('value').then(snap => {
+      const val = snap.val() || {};
+      setExistingPlaces(Object.values(val).filter(p => p.status !== 'blacklist'));
     });
   }, [selectedKey, cities]);
 
@@ -1924,6 +1930,15 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
       .join('\n') || '(no Bangkok examples for this interest)';
   };
 
+  const normName = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const isDupe = (place, existing) => {
+    const nn = normName(place.nameEn);
+    return existing.some(e =>
+      normName(e.nameEn) === nn || normName(e.name) === nn ||
+      (e.lat && e.lng && distM(place.lat, place.lng, e.lat, e.lng) < 150)
+    );
+  };
+
   const generate = async () => {
     const city = cities[selectedKey];
     if (!city) return;
@@ -1932,8 +1947,8 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
     localStorage.setItem('foufou_ai_provider', favProvider);
     localStorage.setItem('foufou_ai_key_' + favProvider, favKey.trim());
     localStorage.setItem('foufou_ai_model_' + favProvider, favModel.trim());
-    setGenerating(true); setGenError(''); setDraftPlaces([]); setEditingIdx(null);
-    const all = [];
+    setGenerating(true); setGenError(''); setDraftPlaces([]); setEditingIdx(null); setFilteredCount(0);
+    const all = []; let filtered = 0;
     for (let i = 0; i < toRun.length; i++) {
       const interest = toRun[i];
       setGenProgress(`${interest.icon || ''} ${interest.labelEn} (${i + 1}/${toRun.length})`);
@@ -1952,34 +1967,40 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
         if (!Array.isArray(arr)) { const m = (result||'').match(/\[\s*\{[\s\S]*?\}\s*\]/); if (m) try { arr = JSON.parse(m[0]); } catch(e) {} }
       } catch(e) {}
       if (Array.isArray(arr)) {
-        const placed = arr.filter(p => p.nameEn && p.lat && p.lng).map(p => {
+        arr.filter(p => p.nameEn && p.lat && p.lng).forEach(p => {
+          if (isDupe(p, existingPlaces) || isDupe(p, all)) { filtered++; return; }
           const { areaId, areaName } = assignArea(p.lat, p.lng, cityAreas);
-          return { ...p, _iid: interest.id, _iname: interest.labelEn, _iicon: interest.icon || '📍', _areaId: areaId, _areaName: areaName };
+          all.push({ ...p, _iid: interest.id, _iname: interest.labelEn, _iicon: interest.icon || '📍', _areaId: areaId, _areaName: areaName });
         });
-        all.push(...placed);
         setDraftPlaces([...all]);
+        setFilteredCount(filtered);
       }
     }
     setGenerating(false); setGenProgress('');
-    if (all.length) showToast(`Generated ${all.length} places across ${toRun.length} interests`, 'success');
+    if (all.length) showToast(`Generated ${all.length} places (${filtered} duplicates filtered)`, 'success');
   };
 
   const saveToFirebase = async () => {
     const city = cities[selectedKey];
     if (!city || !draftPlaces || !draftPlaces.length) return;
     setSaving(true);
-    await Promise.all(draftPlaces.map(p =>
+    const toSave = draftPlaces.filter(p => !isDupe(p, existingPlaces));
+    const skipped = draftPlaces.length - toSave.length;
+    await Promise.all(toSave.map(p =>
       db.ref('cities/' + city.id + '/locations').push({
-        nameEn: p.nameEn || '', name: p.name || p.nameEn || '',
-        description: p.descEn || '', notes: p.desc || '',
+        nameEn: p.nameEn || '', name: p.nameEn || '',
+        description: p.descEn || '',
         lat: p.lat, lng: p.lng,
         area: p._areaId || '', areas: p._areaId ? [p._areaId] : [],
         interests: [p._iid], status: 'active',
-        addedBy: user?.uid || 'ai', locked: false, aiGenerated: true,
+        addedBy: 'ai-gen', locked: true, aiGenerated: true,
       })
     ));
     setSaving(false);
-    showToast(`Saved ${draftPlaces.length} places to ${city.nameEn || city.name}`, 'success');
+    const msg = skipped > 0
+      ? `Saved ${toSave.length} places (${skipped} skipped as duplicates)`
+      : `Saved ${toSave.length} places to ${city.nameEn || city.name}`;
+    showToast(msg, 'success');
     setDraftPlaces(null);
   };
 
@@ -2151,6 +2172,7 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
                 <button onClick={() => { setDraftPlaces(null); setEditingIdx(null); }}
                   style={{ padding:'10px 16px', background:'white', color:'#64748b', border:'1px solid #e2e8f0', borderRadius:10, fontSize:13, cursor:'pointer' }}>Discard</button>
                 <span style={{ fontSize:12, color:'#f59e0b', fontWeight:600 }}>● {draftPlaces.length} places — not saved yet</span>
+                {filteredCount > 0 && <span style={{ fontSize:12, color:'#94a3b8' }}>{filteredCount} duplicates filtered out</span>}
               </>}
             </div>
 
@@ -2170,32 +2192,21 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
                       <div key={idx} style={{ background:'white', borderRadius:12, border:'1px solid #fde68a', padding:'12px 16px' }}>
                         {isEditing ? (
                           <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-                            <div style={{ display:'flex', gap:8 }}>
-                              <div style={{ flex:1 }}>
-                                <div style={{ fontSize:11, fontWeight:700, color:'#92400e', marginBottom:3 }}>English name</div>
-                                <input value={place.nameEn||''} onChange={e => updateDraft(idx,'nameEn',e.target.value)}
-                                  style={{ width:'100%', padding:'6px 8px', border:'1px solid #fde68a', borderRadius:6, fontSize:13, outline:'none', boxSizing:'border-box' }} />
-                              </div>
-                              <div style={{ flex:1 }}>
-                                <div style={{ fontSize:11, fontWeight:700, color:'#94a3b8', marginBottom:3 }}>Hebrew name</div>
-                                <input value={place.name||''} onChange={e => updateDraft(idx,'name',e.target.value)} dir="rtl"
-                                  style={{ width:'100%', padding:'6px 8px', border:'1px solid #e2e8f0', borderRadius:6, fontSize:13, outline:'none', boxSizing:'border-box' }} />
-                              </div>
+                            <div style={{ flex:1 }}>
+                              <div style={{ fontSize:11, fontWeight:700, color:'#92400e', marginBottom:3 }}>Name (English)</div>
+                              <input value={place.nameEn||''} onChange={e => updateDraft(idx,'nameEn',e.target.value)}
+                                style={{ width:'100%', padding:'6px 8px', border:'1px solid #fde68a', borderRadius:6, fontSize:13, outline:'none', boxSizing:'border-box' }} />
                             </div>
-                            <div style={{ display:'flex', gap:8 }}>
-                              <div style={{ flex:1 }}>
-                                <div style={{ fontSize:11, fontWeight:700, color:'#92400e', marginBottom:3 }}>Description (EN)</div>
-                                <input value={place.descEn||''} onChange={e => updateDraft(idx,'descEn',e.target.value)}
-                                  style={{ width:'100%', padding:'6px 8px', border:'1px solid #fde68a', borderRadius:6, fontSize:13, outline:'none', boxSizing:'border-box' }} />
-                              </div>
-                              <div style={{ flex:1 }}>
-                                <div style={{ fontSize:11, fontWeight:700, color:'#94a3b8', marginBottom:3 }}>Description (HE)</div>
-                                <input value={place.desc||''} onChange={e => updateDraft(idx,'desc',e.target.value)} dir="rtl"
-                                  style={{ width:'100%', padding:'6px 8px', border:'1px solid #e2e8f0', borderRadius:6, fontSize:13, outline:'none', boxSizing:'border-box' }} />
-                              </div>
+                            <div style={{ flex:1 }}>
+                              <div style={{ fontSize:11, fontWeight:700, color:'#92400e', marginBottom:3 }}>Description</div>
+                              <input value={place.descEn||''} onChange={e => updateDraft(idx,'descEn',e.target.value)}
+                                style={{ width:'100%', padding:'6px 8px', border:'1px solid #fde68a', borderRadius:6, fontSize:13, outline:'none', boxSizing:'border-box' }} />
                             </div>
                             <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                              <span style={{ fontSize:11, color:'#64748b' }}>📍 {place.lat?.toFixed(4)}, {place.lng?.toFixed(4)} → <b>{place._areaName || 'no area'}</b></span>
+                              <a href={`https://www.google.com/maps/search/${encodeURIComponent(place.nameEn)}/@${place.lat},${place.lng},17z`}
+                                target="_blank" rel="noreferrer"
+                                style={{ fontSize:11, color:'#2563eb' }}>📍 Open in Google Maps</a>
+                              <span style={{ fontSize:11, color:'#94a3b8' }}>→ <b>{place._areaName || 'no area'}</b></span>
                               <div style={{ flex:1 }} />
                               <button onClick={() => setEditingIdx(null)}
                                 style={{ padding:'4px 12px', fontSize:12, background:'#f59e0b', color:'white', border:'none', borderRadius:6, cursor:'pointer', fontWeight:600 }}>Done</button>
@@ -2207,9 +2218,13 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
                           <div style={{ display:'flex', gap:10, alignItems:'flex-start' }}>
                             <div style={{ flex:1, minWidth:0 }}>
                               <div style={{ fontSize:14, fontWeight:600, color:'#1e293b' }}>{place.nameEn}</div>
-                              <div style={{ fontSize:12, color:'#94a3b8', direction:'rtl', textAlign:'right' }}>{place.name}</div>
                               <div style={{ fontSize:12, color:'#64748b', marginTop:2 }}>{place.descEn}</div>
-                              <div style={{ fontSize:11, color:'#94a3b8', marginTop:2 }}>📍 {place._areaName || 'no area'} · {place.lat?.toFixed(4)}, {place.lng?.toFixed(4)}</div>
+                              <div style={{ display:'flex', alignItems:'center', gap:8, marginTop:4 }}>
+                                <span style={{ fontSize:11, color:'#94a3b8' }}>📍 {place._areaName || 'no area'}</span>
+                                <a href={`https://www.google.com/maps/search/${encodeURIComponent(place.nameEn)}/@${place.lat},${place.lng},17z`}
+                                  target="_blank" rel="noreferrer"
+                                  style={{ fontSize:11, color:'#2563eb', textDecoration:'none' }}>View on Google Maps ↗</a>
+                              </div>
                             </div>
                             <div style={{ display:'flex', gap:6, flexShrink:0 }}>
                               <button onClick={() => setEditingIdx(idx)}
