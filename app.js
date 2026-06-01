@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.65';
+const VERSION = '0.2.66';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -85,6 +85,30 @@ Return ONLY the JSON array. No markdown, no explanation.
 
 Now generate tips for: {cityName}`;
 const getTipsPrompt = () => localStorage.getItem('foufou_tips_prompt') || DEFAULT_TIPS_PROMPT;
+
+// ─── Favorites generation prompt ──────────────────────────────────────────────
+const DEFAULT_FAVORITES_PROMPT = `City: {cityName}
+Interest: {interestName}
+
+You are curating places for a tourist discovery app that values quality over quantity.
+The app mixes iconic spots with hidden gems — advice from a knowledgeable friend, not a Wikipedia list.
+
+Bangkok examples for this interest (quality bar):
+{bangkokExamples}
+
+Generate {count} {interestName} spots in {cityName}.
+
+Quality rules:
+- ~30% iconic: places that genuinely deserve their fame even if well-known
+- ~70% hidden gems: a knowledgeable local would recommend these to a friend — not the first Google result
+- No obvious tourist traps or generic landmarks
+- Only real, verifiable places with accurate GPS coordinates
+- descEn: 6-10 words capturing the vibe, like a personal recommendation from someone who's been there
+- name: Hebrew name or transliteration
+
+Return ONLY a JSON array, no markdown:
+[{"nameEn":"English name","name":"Hebrew name","descEn":"6-10 word vibe","desc":"Hebrew translation of descEn","lat":0.0000,"lng":0.0000}]`;
+const getFavoritesPrompt = () => localStorage.getItem('foufou_favorites_prompt') || DEFAULT_FAVORITES_PROMPT;
 
 // ─── Area generation prompts ──────────────────────────────────────────────────
 // AUTO: AI decides count and naming style based on city knowledge
@@ -1823,6 +1847,391 @@ const CityEditor = ({ cityKey, regEntry, showToast, onDone }) => {
   );
 };
 
+// ─── Favorites Generator ──────────────────────────────────────────────────────
+const assignArea = (lat, lng, areas) => {
+  if (!areas || !areas.length) return { areaId: '', areaName: '' };
+  let best = areas[0], bestDist = distM(lat, lng, areas[0].lat, areas[0].lng);
+  for (const a of areas.slice(1)) {
+    const d = distM(lat, lng, a.lat, a.lng);
+    if (d < bestDist) { bestDist = d; best = a; }
+  }
+  return { areaId: best.id, areaName: best.labelEn || best.id };
+};
+
+const FavoritesGenerator = ({ showToast, onBack, user }) => {
+  const [cities, setCities]               = useState({});
+  const [loadingCities, setLoadingCities] = useState(true);
+  const [selectedKey, setSelectedKey]     = useState('');
+  const [interests, setInterests]         = useState([]);
+  const [loadingInterests, setLoadingInterests] = useState(true);
+  const [selInterests, setSelInterests]   = useState({});
+  const [countPer, setCountPer]           = useState(8);
+  const [cityAreas, setCityAreas]         = useState([]);
+  const [generating, setGenerating]       = useState(false);
+  const [genProgress, setGenProgress]     = useState('');
+  const [genError, setGenError]           = useState('');
+  const [draftPlaces, setDraftPlaces]     = useState(null);
+  const [saving, setSaving]               = useState(false);
+  const [editingIdx, setEditingIdx]       = useState(null);
+  const [showKeyPanel, setShowKeyPanel]   = useState(false);
+  const [favPrompt, setFavPrompt]         = useState(getFavoritesPrompt);
+  const [favProvider, setFavProvider]     = useState(getProvider);
+  const [favKey,      setFavKey]          = useState(() => getApiKey(getProvider()));
+  const [favModel,    setFavModel]        = useState(() => getModel(getProvider()));
+  const bkkCacheRef = useRef(null);
+
+  const switchProvider = (p) => { setFavProvider(p); setFavKey(getApiKey(p)); setFavModel(getModel(p)); };
+
+  useEffect(() => {
+    db.ref('settings/cityRegistry').once('value').then(snap => {
+      setCities(snap.val() || {}); setLoadingCities(false);
+    });
+    db.ref('customInterests').once('value').then(snap => {
+      const raw = snap.val() || {};
+      const list = Object.values(raw)
+        .filter(i => i.locked === true && i.labelEn)
+        .sort((a, b) => (a.labelEn||'').localeCompare(b.labelEn||''));
+      setInterests(list);
+      const sel = {}; list.forEach(i => { sel[i.id] = true; });
+      setSelInterests(sel);
+      setLoadingInterests(false);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!selectedKey) { setCityAreas([]); return; }
+    const city = cities[selectedKey];
+    if (!city) return;
+    db.ref('cities/' + city.id + '/config/areas').once('value').then(snap => {
+      const val = snap.val();
+      if (!val) { setCityAreas([]); return; }
+      const arr = Array.isArray(val) ? val : Object.values(val);
+      setCityAreas(arr.filter(a => a && a.lat && a.lng));
+    });
+  }, [selectedKey, cities]);
+
+  const getBangkokExamples = async (interestId) => {
+    if (!bkkCacheRef.current) {
+      const snap = await db.ref('cities/bangkok/locations').once('value');
+      bkkCacheRef.current = snap.val() || {};
+    }
+    const matches = Object.values(bkkCacheRef.current).filter(loc => {
+      const arr = Array.isArray(loc.interests) ? loc.interests : Object.values(loc.interests || {});
+      return arr.includes(interestId) && loc.nameEn && loc.status !== 'blacklist';
+    });
+    return matches.sort(() => Math.random() - 0.5).slice(0, 3)
+      .map(loc => `- ${loc.nameEn}${loc.description ? ': ' + String(loc.description).slice(0, 80) : ''}`)
+      .join('\n') || '(no Bangkok examples for this interest)';
+  };
+
+  const generate = async () => {
+    const city = cities[selectedKey];
+    if (!city) return;
+    const toRun = interests.filter(i => selInterests[i.id]);
+    if (!toRun.length) { showToast('Select at least one interest', 'error'); return; }
+    localStorage.setItem('foufou_ai_provider', favProvider);
+    localStorage.setItem('foufou_ai_key_' + favProvider, favKey.trim());
+    localStorage.setItem('foufou_ai_model_' + favProvider, favModel.trim());
+    setGenerating(true); setGenError(''); setDraftPlaces([]); setEditingIdx(null);
+    const all = [];
+    for (let i = 0; i < toRun.length; i++) {
+      const interest = toRun[i];
+      setGenProgress(`${interest.icon || ''} ${interest.labelEn} (${i + 1}/${toRun.length})`);
+      const examples = await getBangkokExamples(interest.id);
+      const prompt = favPrompt
+        .replace(/\{cityName\}/g, city.nameEn || city.name)
+        .replace(/\{interestName\}/g, interest.labelEn)
+        .replace(/\{count\}/g, String(countPer))
+        .replace(/\{bangkokExamples\}/g, examples);
+      const result = await callAI(prompt, 8192);
+      if (result && result.error) { setGenError(`Error on "${interest.labelEn}": ${result.error}`); break; }
+      let arr = null;
+      try {
+        const s = (result||'').replace(/```[a-z]*/g,'').replace(/```/g,'').trim();
+        try { arr = JSON.parse(s); } catch(e) {}
+        if (!Array.isArray(arr)) { const m = (result||'').match(/\[\s*\{[\s\S]*?\}\s*\]/); if (m) try { arr = JSON.parse(m[0]); } catch(e) {} }
+      } catch(e) {}
+      if (Array.isArray(arr)) {
+        const placed = arr.filter(p => p.nameEn && p.lat && p.lng).map(p => {
+          const { areaId, areaName } = assignArea(p.lat, p.lng, cityAreas);
+          return { ...p, _iid: interest.id, _iname: interest.labelEn, _iicon: interest.icon || '📍', _areaId: areaId, _areaName: areaName };
+        });
+        all.push(...placed);
+        setDraftPlaces([...all]);
+      }
+    }
+    setGenerating(false); setGenProgress('');
+    if (all.length) showToast(`Generated ${all.length} places across ${toRun.length} interests`, 'success');
+  };
+
+  const saveToFirebase = async () => {
+    const city = cities[selectedKey];
+    if (!city || !draftPlaces || !draftPlaces.length) return;
+    setSaving(true);
+    await Promise.all(draftPlaces.map(p =>
+      db.ref('cities/' + city.id + '/locations').push({
+        nameEn: p.nameEn || '', name: p.name || p.nameEn || '',
+        description: p.descEn || '', notes: p.desc || '',
+        lat: p.lat, lng: p.lng,
+        area: p._areaId || '', areas: p._areaId ? [p._areaId] : [],
+        interests: [p._iid], status: 'active',
+        addedBy: user?.uid || 'ai', locked: false, aiGenerated: true,
+      })
+    ));
+    setSaving(false);
+    showToast(`Saved ${draftPlaces.length} places to ${city.nameEn || city.name}`, 'success');
+    setDraftPlaces(null);
+  };
+
+  const updateDraft = (i, f, v) => setDraftPlaces(prev => prev.map((p, idx) => idx===i ? {...p,[f]:v} : p));
+  const deleteDraft = (i) => {
+    setDraftPlaces(prev => prev.filter((_,idx) => idx!==i));
+    if (editingIdx===i) setEditingIdx(null); else if (editingIdx>i) setEditingIdx(editingIdx-1);
+  };
+
+  const sortedCities = Object.entries(cities).sort((a,b) => (a[1].nameEn||'').localeCompare(b[1].nameEn||''));
+  const selectedCity = selectedKey ? cities[selectedKey] : null;
+  const selCount = Object.values(selInterests).filter(Boolean).length;
+  const interestsInDraft = interests.filter(i => draftPlaces && draftPlaces.some(p => p._iid === i.id));
+
+  return (
+    <div style={{ minHeight:'100vh', background:'#f8fafc' }}>
+      {/* Header */}
+      <div style={{ background:'white', borderBottom:'1px solid #e2e8f0', padding:'14px 24px',
+        display:'flex', alignItems:'center', justifyContent:'space-between',
+        position:'sticky', top:0, zIndex:10, boxShadow:'0 1px 4px rgba(0,0,0,0.06)' }}>
+        <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+          <button onClick={onBack} style={{ fontSize:13, color:'#6366f1', background:'none', border:'none', cursor:'pointer', fontWeight:600 }}>← Dashboard</button>
+          <div style={{ width:1, height:20, background:'#e2e8f0' }} />
+          <span style={{ fontSize:22 }}>⭐</span>
+          <div>
+            <div style={{ fontWeight:'bold', color:'#1e293b', fontSize:16, lineHeight:1.2 }}>Favorites Generator</div>
+            <div style={{ fontSize:11, color:'#94a3b8' }}>v{VERSION}</div>
+          </div>
+        </div>
+        <button onClick={() => setShowKeyPanel(v => !v)}
+          style={{ fontSize:12, padding:'5px 10px', borderRadius:8, border:'1px solid #e2e8f0',
+            background: favKey ? '#f0fdf4' : '#fef3c7', cursor:'pointer', color: favKey ? '#16a34a' : '#d97706' }}>
+          {favKey ? '🔑 AI ✓' : '🔑 AI Key'}
+        </button>
+      </div>
+
+      {/* AI panel */}
+      {showKeyPanel && (
+        <div style={{ background:'#fefce8', borderBottom:'1px solid #fde68a', padding:'12px 24px' }}>
+          <div style={{ maxWidth:900, margin:'0 auto', display:'flex', flexDirection:'column', gap:10 }}>
+            <div style={{ display:'flex', gap:6 }}>
+              {Object.entries(AI_PROVIDERS).map(([id, p]) => (
+                <button key={id} onClick={() => switchProvider(id)}
+                  style={{ padding:'4px 14px', fontSize:12, fontWeight:600, borderRadius:20,
+                    border:'1px solid '+(favProvider===id?'#d97706':'#e2e8f0'),
+                    background: favProvider===id?'#fef3c7':'white',
+                    color: favProvider===id?'#92400e':'#64748b', cursor:'pointer' }}>
+                  {p.name} {getApiKey(id)?'✓':''} {p.free?'(free)':''}
+                </button>
+              ))}
+            </div>
+            <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+              <span style={{ fontSize:12, fontWeight:700, color:'#92400e', minWidth:30 }}>Key</span>
+              <input value={favKey} onChange={e => setFavKey(e.target.value)} type="password"
+                placeholder={AI_PROVIDERS[favProvider].keyHint}
+                style={{ flex:2, minWidth:200, padding:'6px 10px', border:'1px solid #fcd34d', borderRadius:8, fontSize:12, fontFamily:'monospace', outline:'none', background:'white' }} />
+              <span style={{ fontSize:12, fontWeight:700, color:'#92400e' }}>Model</span>
+              <input value={favModel} onChange={e => setFavModel(e.target.value)}
+                style={{ flex:1, minWidth:140, padding:'6px 10px', border:'1px solid #fcd34d', borderRadius:8, fontSize:12, fontFamily:'monospace', outline:'none', background:'white' }} />
+              <a href={AI_PROVIDERS[favProvider].keyUrl} target="_blank" rel="noreferrer" style={{ fontSize:11, color:'#92400e' }}>Get key ↗</a>
+            </div>
+            <div style={{ display:'flex', alignItems:'flex-start', gap:8 }}>
+              <span style={{ fontSize:12, fontWeight:700, color:'#92400e', minWidth:50, paddingTop:4 }}>Prompt</span>
+              <textarea value={favPrompt} onChange={e => setFavPrompt(e.target.value)} rows={14} spellCheck={false}
+                style={{ flex:1, padding:'8px 10px', border:'1px solid #fcd34d', borderRadius:8, fontSize:12, fontFamily:'monospace', outline:'none', resize:'vertical', lineHeight:1.5 }} />
+            </div>
+            <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+              <button onClick={() => setFavPrompt(DEFAULT_FAVORITES_PROMPT)}
+                style={{ padding:'6px 14px', fontSize:12, background:'white', border:'1px solid #fcd34d', borderRadius:8, cursor:'pointer', color:'#92400e' }}>Reset prompt</button>
+              <button onClick={() => setShowKeyPanel(false)}
+                style={{ padding:'6px 14px', fontSize:12, background:'white', border:'1px solid #e2e8f0', borderRadius:8, cursor:'pointer', color:'#64748b' }}>Cancel</button>
+              <button onClick={() => {
+                localStorage.setItem('foufou_ai_provider', favProvider);
+                localStorage.setItem('foufou_ai_key_' + favProvider, favKey.trim());
+                localStorage.setItem('foufou_ai_model_' + favProvider, favModel.trim());
+                localStorage.setItem('foufou_favorites_prompt', favPrompt);
+                setShowKeyPanel(false);
+                showToast('AI settings saved (' + AI_PROVIDERS[favProvider].name + ')', 'success');
+              }} style={{ padding:'6px 14px', fontSize:12, background:'#d97706', color:'white', border:'none', borderRadius:8, cursor:'pointer', fontWeight:'bold' }}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={{ maxWidth:920, margin:'0 auto', padding:'32px 24px' }}>
+        {/* City picker */}
+        <div style={{ marginBottom:24 }}>
+          <label style={{ fontSize:13, fontWeight:700, color:'#334155', display:'block', marginBottom:8 }}>Select a city</label>
+          {loadingCities ? <div style={{ color:'#94a3b8', fontSize:13 }}>Loading...</div> : (
+            <select value={selectedKey} onChange={e => { setSelectedKey(e.target.value); setDraftPlaces(null); setEditingIdx(null); }}
+              style={{ padding:'10px 14px', border:'2px solid #f59e0b', borderRadius:10, fontSize:14, color:'#1e293b', background:'white', cursor:'pointer', outline:'none', minWidth:240 }}>
+              <option value="">— pick a city —</option>
+              {sortedCities.map(([key, city]) => <option key={key} value={key}>{city.nameEn || city.name}</option>)}
+            </select>
+          )}
+        </div>
+
+        {selectedCity && draftPlaces === null && (
+          <>
+            {/* Interest picker */}
+            <div style={{ background:'white', borderRadius:16, border:'1px solid #e2e8f0', padding:20, marginBottom:20 }}>
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
+                <div style={{ fontSize:14, fontWeight:700, color:'#1e293b' }}>Select interests</div>
+                <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                  <span style={{ fontSize:12, color:'#64748b' }}>Places per interest:</span>
+                  <input type="number" min={3} max={20} value={countPer}
+                    onChange={e => setCountPer(Math.max(3, Math.min(20, +e.target.value)))}
+                    style={{ width:50, padding:'4px 8px', border:'1px solid #e2e8f0', borderRadius:6, fontSize:13, textAlign:'center', outline:'none' }} />
+                </div>
+              </div>
+              <div style={{ display:'flex', gap:6, marginBottom:10 }}>
+                <button onClick={() => { const s={}; interests.forEach(i=>{s[i.id]=true;}); setSelInterests(s); }}
+                  style={{ fontSize:11, padding:'3px 10px', borderRadius:6, border:'1px solid #e2e8f0', background:'white', cursor:'pointer', color:'#64748b' }}>All</button>
+                <button onClick={() => setSelInterests({})}
+                  style={{ fontSize:11, padding:'3px 10px', borderRadius:6, border:'1px solid #e2e8f0', background:'white', cursor:'pointer', color:'#64748b' }}>None</button>
+              </div>
+              {loadingInterests ? <div style={{ color:'#94a3b8', fontSize:13 }}>Loading interests...</div> : (
+                <div style={{ display:'flex', flexWrap:'wrap', gap:7 }}>
+                  {interests.map(interest => {
+                    const on = !!selInterests[interest.id];
+                    return (
+                      <button key={interest.id}
+                        onClick={() => setSelInterests(prev => ({ ...prev, [interest.id]: !prev[interest.id] }))}
+                        style={{ padding:'6px 12px', borderRadius:20, fontSize:12, fontWeight:600, cursor:'pointer',
+                          border:'1px solid '+(on?'#f59e0b':'#e2e8f0'),
+                          background: on?'#fef3c7':'white', color: on?'#92400e':'#94a3b8' }}>
+                        {interest.icon||'📍'} {interest.labelEn}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+              <button onClick={generate} disabled={generating || !selCount}
+                style={{ padding:'10px 28px', background: (!selCount||generating)?'#fcd34d':'#f59e0b',
+                  color:'white', border:'none', borderRadius:10, fontSize:14, fontWeight:'bold',
+                  cursor: (!selCount||generating)?'default':'pointer' }}>
+                {generating ? `⏳ ${genProgress}` : `✨ Generate — ${selCount} interests × ${countPer} places`}
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* Progress indicator while generating with no results yet */}
+        {generating && draftPlaces !== null && draftPlaces.length === 0 && (
+          <div style={{ color:'#f59e0b', fontSize:14, fontWeight:600, padding:'24px 0' }}>⏳ {genProgress}</div>
+        )}
+
+        {genError && (
+          <div style={{ background:'#fef2f2', border:'1px solid #fca5a5', borderRadius:10, padding:'12px 16px', margin:'16px 0', fontSize:13, color:'#dc2626' }}>
+            {genError}
+          </div>
+        )}
+
+        {/* Review */}
+        {draftPlaces !== null && draftPlaces.length > 0 && (
+          <>
+            <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:24, flexWrap:'wrap' }}>
+              <button onClick={saveToFirebase} disabled={saving || generating}
+                style={{ padding:'10px 24px', background: (saving||generating)?'#86efac':'#10b981',
+                  color:'white', border:'none', borderRadius:10, fontSize:14, fontWeight:'bold',
+                  cursor:(saving||generating)?'default':'pointer' }}>
+                {saving ? 'Saving...' : `💾 Save ${draftPlaces.length} places`}
+              </button>
+              {generating && <span style={{ fontSize:12, color:'#f59e0b', fontWeight:600 }}>⏳ Still generating: {genProgress}</span>}
+              {!generating && <>
+                <button onClick={() => { setDraftPlaces(null); setEditingIdx(null); }}
+                  style={{ padding:'10px 16px', background:'white', color:'#64748b', border:'1px solid #e2e8f0', borderRadius:10, fontSize:13, cursor:'pointer' }}>Discard</button>
+                <span style={{ fontSize:12, color:'#f59e0b', fontWeight:600 }}>● {draftPlaces.length} places — not saved yet</span>
+              </>}
+            </div>
+
+            {interestsInDraft.map(interest => (
+              <div key={interest.id} style={{ marginBottom:28 }}>
+                <div style={{ fontSize:13, fontWeight:700, color:'#92400e', marginBottom:8, display:'flex', alignItems:'center', gap:6 }}>
+                  {interest.icon} {interest.labelEn}
+                  <span style={{ fontSize:11, color:'#94a3b8', fontWeight:400 }}>
+                    ({draftPlaces.filter(p => p._iid===interest.id).length} places)
+                  </span>
+                </div>
+                <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                  {draftPlaces.map((place, idx) => {
+                    if (place._iid !== interest.id) return null;
+                    const isEditing = editingIdx === idx;
+                    return (
+                      <div key={idx} style={{ background:'white', borderRadius:12, border:'1px solid #fde68a', padding:'12px 16px' }}>
+                        {isEditing ? (
+                          <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                            <div style={{ display:'flex', gap:8 }}>
+                              <div style={{ flex:1 }}>
+                                <div style={{ fontSize:11, fontWeight:700, color:'#92400e', marginBottom:3 }}>English name</div>
+                                <input value={place.nameEn||''} onChange={e => updateDraft(idx,'nameEn',e.target.value)}
+                                  style={{ width:'100%', padding:'6px 8px', border:'1px solid #fde68a', borderRadius:6, fontSize:13, outline:'none', boxSizing:'border-box' }} />
+                              </div>
+                              <div style={{ flex:1 }}>
+                                <div style={{ fontSize:11, fontWeight:700, color:'#94a3b8', marginBottom:3 }}>Hebrew name</div>
+                                <input value={place.name||''} onChange={e => updateDraft(idx,'name',e.target.value)} dir="rtl"
+                                  style={{ width:'100%', padding:'6px 8px', border:'1px solid #e2e8f0', borderRadius:6, fontSize:13, outline:'none', boxSizing:'border-box' }} />
+                              </div>
+                            </div>
+                            <div style={{ display:'flex', gap:8 }}>
+                              <div style={{ flex:1 }}>
+                                <div style={{ fontSize:11, fontWeight:700, color:'#92400e', marginBottom:3 }}>Description (EN)</div>
+                                <input value={place.descEn||''} onChange={e => updateDraft(idx,'descEn',e.target.value)}
+                                  style={{ width:'100%', padding:'6px 8px', border:'1px solid #fde68a', borderRadius:6, fontSize:13, outline:'none', boxSizing:'border-box' }} />
+                              </div>
+                              <div style={{ flex:1 }}>
+                                <div style={{ fontSize:11, fontWeight:700, color:'#94a3b8', marginBottom:3 }}>Description (HE)</div>
+                                <input value={place.desc||''} onChange={e => updateDraft(idx,'desc',e.target.value)} dir="rtl"
+                                  style={{ width:'100%', padding:'6px 8px', border:'1px solid #e2e8f0', borderRadius:6, fontSize:13, outline:'none', boxSizing:'border-box' }} />
+                              </div>
+                            </div>
+                            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                              <span style={{ fontSize:11, color:'#64748b' }}>📍 {place.lat?.toFixed(4)}, {place.lng?.toFixed(4)} → <b>{place._areaName || 'no area'}</b></span>
+                              <div style={{ flex:1 }} />
+                              <button onClick={() => setEditingIdx(null)}
+                                style={{ padding:'4px 12px', fontSize:12, background:'#f59e0b', color:'white', border:'none', borderRadius:6, cursor:'pointer', fontWeight:600 }}>Done</button>
+                              <button onClick={() => deleteDraft(idx)}
+                                style={{ padding:'4px 12px', fontSize:12, background:'white', color:'#ef4444', border:'1px solid #fca5a5', borderRadius:6, cursor:'pointer' }}>Delete</button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{ display:'flex', gap:10, alignItems:'flex-start' }}>
+                            <div style={{ flex:1, minWidth:0 }}>
+                              <div style={{ fontSize:14, fontWeight:600, color:'#1e293b' }}>{place.nameEn}</div>
+                              <div style={{ fontSize:12, color:'#94a3b8', direction:'rtl', textAlign:'right' }}>{place.name}</div>
+                              <div style={{ fontSize:12, color:'#64748b', marginTop:2 }}>{place.descEn}</div>
+                              <div style={{ fontSize:11, color:'#94a3b8', marginTop:2 }}>📍 {place._areaName || 'no area'} · {place.lat?.toFixed(4)}, {place.lng?.toFixed(4)}</div>
+                            </div>
+                            <div style={{ display:'flex', gap:6, flexShrink:0 }}>
+                              <button onClick={() => setEditingIdx(idx)}
+                                style={{ fontSize:11, padding:'3px 10px', borderRadius:6, border:'1px solid #fde68a', background:'#fefce8', color:'#92400e', cursor:'pointer' }}>Edit</button>
+                              <button onClick={() => deleteDraft(idx)}
+                                style={{ fontSize:11, padding:'3px 8px', borderRadius:6, border:'1px solid #fca5a5', background:'white', color:'#ef4444', cursor:'pointer' }}>✕</button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
 // ─── Tips Generator ───────────────────────────────────────────────────────────
 const TipsGenerator = ({ showToast, onBack }) => {
   const [cities, setCities]             = useState({});
@@ -2154,7 +2563,7 @@ const TipsGenerator = ({ showToast, onBack }) => {
 const SECTIONS = [
   { id:'cities',    icon:'🏙️', title:'City Builder',        color:'#10b981', ready:true,
     desc:'Create and edit cities — define areas, boundaries, names and characteristics.' },
-  { id:'favorites', icon:'⭐', title:'Favorites Generator',  color:'#f59e0b', ready:false,
+  { id:'favorites', icon:'⭐', title:'Favorites Generator',  color:'#f59e0b', ready:true,
     desc:'AI agent adds 5 curated places per area per interest using Google Places.' },
   { id:'tips',      icon:'💡', title:'Tips Generator',       color:'#6366f1', ready:true,
     desc:'Generate practical tourist tips for each city, like the Bangkok tips in FouFou.' },
@@ -2454,6 +2863,10 @@ const FouFouBuild = () => {
             onEditCity={(key, entry) => { setEditingCity({ key, entry }); setView('edit-city'); }}
           />
         </>
+      )}
+
+      {view === 'favorites' && (
+        <FavoritesGenerator showToast={showToast} onBack={() => setView('dashboard')} user={user} />
       )}
 
       {view === 'tips' && (
