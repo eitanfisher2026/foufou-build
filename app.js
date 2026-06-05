@@ -17,13 +17,13 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.84';
+const VERSION = '0.2.85';
 
 // AI provider configuration
 const AI_PROVIDERS = {
   gemini:    { name: 'Google Gemini', defaultModel: 'gemini-2.5-flash',         keyHint: 'AIza...',    keyUrl: 'https://aistudio.google.com/apikey',                free: true  },
   openai:    { name: 'OpenAI / ChatGPT', defaultModel: 'gpt-4o-mini',           keyHint: 'sk-...',     keyUrl: 'https://platform.openai.com/api-keys',              free: false },
-  anthropic: { name: 'Anthropic Claude', defaultModel: 'claude-3-5-haiku-20241022', keyHint: 'sk-ant-...', keyUrl: 'https://console.anthropic.com/settings/keys',  free: false },
+  anthropic: { name: 'Anthropic Claude', defaultModel: 'claude-haiku-4-5-20251001', keyHint: 'sk-ant-...', keyUrl: 'https://console.anthropic.com/settings/keys',  free: false },
 };
 const getProvider  = () => localStorage.getItem('foufou_ai_provider') || 'gemini';
 const getApiKey    = (p) => localStorage.getItem('foufou_ai_key_' + (p||getProvider())) || '';
