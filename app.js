@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.80';
+const VERSION = '0.2.81';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -2645,7 +2645,7 @@ const InterestAdvisor = ({ showToast, onBack }) => {
   const MODES = [
     { id:'spot',     label:'Spot Check',       desc:'One interest × one city' },
     { id:'sweep',    label:'City Sweep',        desc:'All interests for a city' },
-    { id:'discover', label:'Discover Missing',  desc:'What's missing in a city' },
+    { id:'discover', label:'Discover Missing',  desc:'Find missing interests for a city' },
   ];
 
   return (
