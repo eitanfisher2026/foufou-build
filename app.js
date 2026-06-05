@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.86';
+const VERSION = '0.2.87';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -131,34 +131,29 @@ Reply with ONLY this JSON object, no explanation, no markdown:
 
 const DEFAULT_DISCOVER_PROMPT = `City: {cityName}
 
-You are a travel expert. FouFou is a tourist app with these global interest categories and their Google Places search types:
+You are a travel expert. FouFou is a global tourist app with these interest categories (name → what it searches for):
 {interestList}
 
-Find interest categories that tourists seek in {cityName} but that are NOT well covered above.
+Find tourist interest categories that are NOT well covered above for visitors to {cityName}.
 
-THREE STRICT RULES — violating any one makes a suggestion useless:
+TWO STRICT RULES:
 
-RULE 1 — GLOBAL CATEGORIES ONLY
-Interests are shared across all cities. Name them generically, not city-specifically.
-BAD: "Underground Rome & Catacombs" (Rome-only)
-GOOD: "Underground Historic Sites" (applies to Rome, Paris, Naples, Edinburgh...)
-BAD: "Tiber River Activities" (Rome-only)
-GOOD: "Waterfront & Riverfront Walks" (applies to Paris, Budapest, Prague...)
+RULE 1 — GLOBAL CATEGORIES ONLY (minimum 5 cities where relevant)
+Interests apply across many cities. Name them generically.
+BAD: "Underground Rome & Catacombs" — Rome-only name
+GOOD: "Underground Historic Sites" — Rome, Paris, Naples, Edinburgh, Valletta...
+BAD: "Traditional Roman Trattorias" — Italy-only
+GOOD: "Traditional Neighborhood Eateries" — Rome, Lisbon, Athens, Istanbul...
+If you cannot name at least 5 different cities where this interest matters, do not suggest it.
 
-RULE 2 — ONLY REAL GOOGLE PLACES API TYPES
-Use ONLY types from this verified list. Do NOT invent types.
-Valid types include: tourist_attraction, museum, art_gallery, church, synagogue, mosque, hindu_temple, historical_landmark, park, cemetery, night_club, bar, wine_bar, spa, clothing_store, jewelry_store, book_store, market, farmers_market, shopping_mall, stadium, theater, movie_theater, library, cultural_center, convention_center, aquarium, zoo, amusement_park, marina, beach, campground, casino, bowling_alley, and all cuisine restaurant types (italian_restaurant, seafood_restaurant, etc.)
-If you cannot find a real type for the concept, do not suggest it.
+RULE 2 — CONCEPTS ONLY, NO GOOGLE TYPES
+Do NOT suggest Google search types. The user will add types manually.
+Just explain the tourist need clearly.
 
-RULE 3 — ONE COHERENT EXPERIENCE PER INTEREST
-Each interest = one type of tourist experience. Do NOT mix unrelated things.
-BAD: synagogue + jewish_museum + kosher_restaurant (religious site + museum + food = incoherent search results)
-GOOD: synagogue + historical_landmark (Jewish heritage sites — one coherent experience)
-
-Think about: local forms of shopping, food traditions, architectural styles, religious/cultural heritage, outdoor activities, evening entertainment — anything where existing types miss the city reality.
+Think about: local forms of shopping that existing types miss, food traditions beyond generic restaurants, architectural or historical experiences, outdoor/waterfront activities, evening culture — anything tourists specifically seek that the current list cannot surface well.
 
 Return ONLY a JSON array, no explanation, no markdown:
-[{"nameEn":"Generic global name","reason":"Why this matters — mention {cityName} and other cities","googleTypes":["real_type1","real_type2"],"otherCities":["city1","city2"]}]`;
+[{"nameEn":"Generic global name","reason":"What tourists seek and why existing interests miss it — be specific","otherCities":["at least 5 cities"]}]`;
 
 // ─── Area generation prompts ──────────────────────────────────────────────────
 // AUTO: AI decides count and naming style based on city knowledge
@@ -2654,10 +2649,9 @@ const InterestAdvisor = ({ showToast, onBack }) => {
   const createDraftInterest = async (suggestion, idx) => {
     setDiscCreating(prev => ({ ...prev, [idx]: true }));
     const id = suggestion.nameEn.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
-    const types = suggestion.googleTypes || [];
     await db.ref('customInterests/' + id).set({
       id, labelEn: suggestion.nameEn, label: '', icon: '📍',
-      locked: false, searchMode: 'types', types,
+      locked: false, searchMode: 'types', types: [],
       aiGenerated: true, weight: 3, minStops: 1, maxStops: 10,
     });
     setDiscCreating(prev => ({ ...prev, [idx]: false }));
@@ -2927,14 +2921,14 @@ const InterestAdvisor = ({ showToast, onBack }) => {
                       <div style={{ flex:1 }}>
                         <div style={{ fontSize:14, fontWeight:700, color:'#1e293b', marginBottom:4 }}>{s.nameEn}</div>
                         <div style={{ fontSize:12, color:'#64748b', marginBottom:6 }}>{s.reason}</div>
-                        <div style={{ fontSize:11, color:'#6366f1', marginBottom:4 }}>
-                          Types: {(s.googleTypes || []).join(', ')}
-                        </div>
                         {s.otherCities && s.otherCities.length > 0 && (
                           <div style={{ fontSize:11, color:'#94a3b8' }}>
                             Also relevant: {s.otherCities.join(', ')}
                           </div>
                         )}
+                        <div style={{ fontSize:10, color:'#c4b5fd', marginTop:4 }}>
+                          Draft saved without types — add Google Place types in FouFou interest settings
+                        </div>
                       </div>
                       <button onClick={() => createDraftInterest(s, idx)} disabled={!!discCreating[idx]}
                         style={{ flexShrink:0, padding:'6px 14px', fontSize:12, fontWeight:600,
