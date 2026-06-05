@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.83';
+const VERSION = '0.2.84';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -2442,6 +2442,8 @@ const InterestAdvisor = ({ showToast, onBack }) => {
   const [iaProvider, setIaProvider] = useState(getProvider);
   const [iaKey,      setIaKey]     = useState(() => getApiKey(getProvider()));
   const [iaModel,    setIaModel]   = useState(() => getModel(getProvider()));
+  const [spotPrompt, setSpotPrompt]       = useState(() => localStorage.getItem('foufou_ia_spot_prompt') || DEFAULT_SPOT_PROMPT);
+  const [discoverPrompt, setDiscoverPrompt] = useState(() => localStorage.getItem('foufou_ia_discover_prompt') || DEFAULT_DISCOVER_PROMPT);
 
   // Phase 1 — Spot
   const [spotCity, setSpotCity]         = useState('');
@@ -2467,6 +2469,8 @@ const InterestAdvisor = ({ showToast, onBack }) => {
     localStorage.setItem('foufou_ai_provider', iaProvider);
     localStorage.setItem('foufou_ai_key_' + iaProvider, iaKey.trim());
     localStorage.setItem('foufou_ai_model_' + iaProvider, iaModel.trim());
+    localStorage.setItem('foufou_ia_spot_prompt', spotPrompt);
+    localStorage.setItem('foufou_ia_discover_prompt', discoverPrompt);
     setShowKeyPanel(false);
     showToast('AI settings saved', 'success');
   };
@@ -2559,7 +2563,7 @@ const InterestAdvisor = ({ showToast, onBack }) => {
     setSpotRunning(true); setSpotResult(null);
     const bkk = getBangkokRef();
     const bl = (interest.blacklist || []);
-    const prompt = DEFAULT_SPOT_PROMPT
+    const prompt = spotPrompt
       .replace(/\{cityName\}/g, city.nameEn || city.name)
       .replace(/\{interestName\}/g, interest.labelEn)
       .replace(/\{searchDesc\}/g, getSearchDesc(interest))
@@ -2585,7 +2589,7 @@ const InterestAdvisor = ({ showToast, onBack }) => {
       const interest = interests[i];
       setSweepProgress(`${interest.labelEn} (${i + 1}/${interests.length})`);
       const bl = (interest.blacklist || []);
-      const prompt = DEFAULT_SPOT_PROMPT
+      const prompt = spotPrompt
         .replace(/\{cityName\}/g, city.nameEn || city.name)
         .replace(/\{interestName\}/g, interest.labelEn)
         .replace(/\{searchDesc\}/g, getSearchDesc(interest))
@@ -2626,7 +2630,7 @@ const InterestAdvisor = ({ showToast, onBack }) => {
     applyIa();
     setDiscRunning(true); setDiscResults(null);
     const interestList = interests.map(i => `- ${i.labelEn}: ${getSearchDesc(i)}`).join('\n');
-    const prompt = DEFAULT_DISCOVER_PROMPT
+    const prompt = discoverPrompt
       .replace(/\{cityName\}/g, city.nameEn || city.name)
       .replace(/\{interestList\}/g, interestList);
     const raw = await callAI(prompt, 4096);
@@ -2709,6 +2713,23 @@ const InterestAdvisor = ({ showToast, onBack }) => {
               <input value={iaModel} onChange={e => setIaModel(e.target.value)}
                 style={{ flex:1, minWidth:140, padding:'6px 10px', border:'1px solid #fcd34d', borderRadius:8, fontSize:12, fontFamily:'monospace', outline:'none', background:'white' }} />
               <a href={AI_PROVIDERS[iaProvider].keyUrl} target="_blank" rel="noreferrer" style={{ fontSize:11, color:'#92400e' }}>Get key ↗</a>
+            </div>
+            {/* Prompt editor — shows prompt for current mode */}
+            <div style={{ display:'flex', alignItems:'flex-start', gap:8 }}>
+              <span style={{ fontSize:12, fontWeight:700, color:'#92400e', minWidth:60, paddingTop:4 }}>
+                {mode === 'discover' ? 'Discover prompt' : 'Spot/Sweep prompt'}
+              </span>
+              <div style={{ flex:1, display:'flex', flexDirection:'column', gap:4 }}>
+                <textarea
+                  value={mode === 'discover' ? discoverPrompt : spotPrompt}
+                  onChange={e => mode === 'discover' ? setDiscoverPrompt(e.target.value) : setSpotPrompt(e.target.value)}
+                  rows={12} spellCheck={false}
+                  style={{ width:'100%', padding:'8px 10px', border:'1px solid #fcd34d', borderRadius:8, fontSize:11, fontFamily:'monospace', outline:'none', resize:'vertical', lineHeight:1.5, boxSizing:'border-box' }} />
+                <button onClick={() => mode === 'discover' ? setDiscoverPrompt(DEFAULT_DISCOVER_PROMPT) : setSpotPrompt(DEFAULT_SPOT_PROMPT)}
+                  style={{ alignSelf:'flex-start', padding:'3px 10px', fontSize:11, background:'white', border:'1px solid #fcd34d', borderRadius:6, cursor:'pointer', color:'#92400e' }}>
+                  Reset prompt
+                </button>
+              </div>
             </div>
             <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
               <button onClick={() => setShowKeyPanel(false)} style={{ padding:'6px 14px', fontSize:12, background:'white', border:'1px solid #e2e8f0', borderRadius:8, cursor:'pointer', color:'#64748b' }}>Cancel</button>
