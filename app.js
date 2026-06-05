@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.76';
+const VERSION = '0.2.80';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -110,6 +110,36 @@ Quality rules:
 Return ONLY a JSON array, no markdown:
 [{"nameEn":"English name","descEn":"6-10 word vibe","lat":0.0000,"lng":0.0000}]`;
 const getFavoritesPrompt = () => localStorage.getItem('foufou_favorites_prompt') || DEFAULT_FAVORITES_PROMPT;
+
+// ─── Interest Advisor prompts ─────────────────────────────────────────────────
+const DEFAULT_SPOT_PROMPT = `City: {cityName}
+
+Interest: {interestName}
+What FouFou searches for: {searchDesc}
+{blacklistLine}
+Bangkok (reference) — shown: {bangkokShown}
+Bangkok — hidden: {bangkokHidden}
+
+Should "{interestName}" be shown or hidden for tourists in {cityName}?
+
+Consider:
+1. Do tourists genuinely seek this in {cityName}?
+2. Do the search terms actually surface the right places? (e.g. "Shopping Malls" works in Bangkok but not Rome where shopping is on streets — that would be a "gap")
+3. Return "gap" only if the concept exists but the search terms miss it
+
+Return ONLY JSON: {"recommendation":"show"|"hide"|"gap","reason":"one sentence","gapNote":"only if gap: what the types miss"}`;
+
+const DEFAULT_DISCOVER_PROMPT = `City: {cityName}
+
+FouFou tourist app — existing interest categories (name → what it searches for in Google):
+{interestList}
+
+What tourist interests are commonly sought by visitors to {cityName} that are NOT covered above?
+Focus on what makes {cityName} special — local experiences, iconic activities, things tourists specifically seek there.
+Only suggest things genuinely missing from the list above.
+
+Return ONLY a JSON array (max 8):
+[{"nameEn":"Interest name","reason":"Why tourists look for this in {cityName}","googleTypes":["google_type1","google_type2"],"otherCities":["city1","city2"]}]`;
 
 // ─── Area generation prompts ──────────────────────────────────────────────────
 // AUTO: AI decides count and naming style based on city knowledge
@@ -2392,6 +2422,494 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
   );
 };
 
+// ─── Interest Advisor ────────────────────────────────────────────────────────
+const InterestAdvisor = ({ showToast, onBack }) => {
+  const [mode, setMode]           = useState('spot'); // 'spot'|'sweep'|'discover'
+  const [cities, setCities]       = useState({});
+  const [interests, setInterests] = useState([]);
+  const [cityHidden, setCityHidden] = useState({}); // {cityId: [interestId,...]}
+  const [dataLoading, setDataLoading] = useState(true);
+  const [showKeyPanel, setShowKeyPanel] = useState(false);
+  const [iaProvider, setIaProvider] = useState(getProvider);
+  const [iaKey,      setIaKey]     = useState(() => getApiKey(getProvider()));
+  const [iaModel,    setIaModel]   = useState(() => getModel(getProvider()));
+
+  // Phase 1 — Spot
+  const [spotCity, setSpotCity]         = useState('');
+  const [spotInterest, setSpotInterest] = useState('');
+  const [spotResult, setSpotResult]     = useState(null);
+  const [spotRunning, setSpotRunning]   = useState(false);
+
+  // Phase 2 — Sweep
+  const [sweepCity, setSweepCity]         = useState('');
+  const [sweepResults, setSweepResults]   = useState(null);
+  const [sweepRunning, setSweepRunning]   = useState(false);
+  const [sweepProgress, setSweepProgress] = useState('');
+  const [sweepApplying, setSweepApplying] = useState(false);
+
+  // Phase 3 — Discover
+  const [discCity, setDiscCity]         = useState('');
+  const [discResults, setDiscResults]   = useState(null);
+  const [discRunning, setDiscRunning]   = useState(false);
+  const [discCreating, setDiscCreating] = useState({});
+
+  const switchIa = (p) => { setIaProvider(p); setIaKey(getApiKey(p)); setIaModel(getModel(p)); };
+  const saveIaKey = () => {
+    localStorage.setItem('foufou_ai_provider', iaProvider);
+    localStorage.setItem('foufou_ai_key_' + iaProvider, iaKey.trim());
+    localStorage.setItem('foufou_ai_model_' + iaProvider, iaModel.trim());
+    setShowKeyPanel(false);
+    showToast('AI settings saved', 'success');
+  };
+  const applyIa = () => {
+    localStorage.setItem('foufou_ai_provider', iaProvider);
+    localStorage.setItem('foufou_ai_key_' + iaProvider, iaKey.trim());
+    localStorage.setItem('foufou_ai_model_' + iaProvider, iaModel.trim());
+  };
+
+  useEffect(() => {
+    Promise.all([
+      db.ref('settings/cityRegistry').once('value'),
+      db.ref('customInterests').once('value'),
+      db.ref('settings/interestGroups').once('value'),
+      db.ref('settings/cityHiddenInterests').once('value'),
+    ]).then(([citySnap, intSnap, grpSnap, hidSnap]) => {
+      setCities(citySnap.val() || {});
+      setCityHidden(hidSnap.val() || {});
+      const raw = intSnap.val() || {};
+      const groups = grpSnap.val() || {};
+      const groupOrder = {};
+      Object.keys(groups).forEach((g, i) => { groupOrder[g] = groups[g]?.order ?? i; });
+      const list = Object.values(raw)
+        .filter(i => i.locked === true && i.labelEn)
+        .sort((a, b) => {
+          const ga = groupOrder[a.group || ''] ?? 99, gb = groupOrder[b.group || ''] ?? 99;
+          if (ga !== gb) return ga - gb;
+          return (a.labelEn || '').localeCompare(b.labelEn || '');
+        });
+      setInterests(list);
+      setDataLoading(false);
+    });
+  }, []);
+
+  const getSearchDesc = (interest) => {
+    if (interest.searchMode === 'textSearch' && interest.textSearch)
+      return `text search: "${interest.textSearch}"`;
+    const types = Array.isArray(interest.types) ? interest.types : Object.values(interest.types || {});
+    return types.slice(0, 10).join(', ') + (types.length > 10 ? '...' : '');
+  };
+
+  const getBangkokRef = () => {
+    const hidden = new Set(cityHidden['bangkok'] || []);
+    const shown  = interests.filter(i => !hidden.has(i.id)).map(i => i.labelEn).join(', ');
+    const hid    = interests.filter(i =>  hidden.has(i.id)).map(i => i.labelEn).join(', ');
+    return { shown: shown || 'all', hidden: hid || 'none' };
+  };
+
+  const parseAI = (raw) => {
+    try {
+      const s = (raw||'').replace(/```[a-z]*/g,'').replace(/```/g,'').trim();
+      try { return JSON.parse(s); } catch(e) {}
+      const m = s.match(/\{[\s\S]*\}/);
+      if (m) return JSON.parse(m[0]);
+    } catch(e) {}
+    return null;
+  };
+  const parseAIArray = (raw) => {
+    try {
+      const s = (raw||'').replace(/```[a-z]*/g,'').replace(/```/g,'').trim();
+      try { const r = JSON.parse(s); return Array.isArray(r) ? r : null; } catch(e) {}
+      const m = s.match(/\[[\s\S]*\]/);
+      if (m) return JSON.parse(m[0]);
+    } catch(e) {}
+    return null;
+  };
+
+  const applyVisibility = async (cityId, interestId, action) => {
+    const snap = await db.ref('settings/cityHiddenInterests/' + cityId).once('value');
+    const cur = snap.val() || [];
+    const arr = Array.isArray(cur) ? cur : Object.values(cur);
+    const updated = action === 'hide'
+      ? (arr.includes(interestId) ? arr : [...arr, interestId])
+      : arr.filter(id => id !== interestId);
+    await db.ref('settings/cityHiddenInterests/' + cityId).set(updated.length ? updated : null);
+    setCityHidden(prev => ({ ...prev, [cityId]: updated }));
+  };
+
+  // ── Phase 1: Spot Check ─────────────────────────────────────────
+  const runSpot = async () => {
+    const interest = interests.find(i => i.id === spotInterest);
+    const city = cities[spotCity];
+    if (!interest || !city) return;
+    applyIa();
+    setSpotRunning(true); setSpotResult(null);
+    const bkk = getBangkokRef();
+    const bl = (interest.blacklist || []);
+    const prompt = DEFAULT_SPOT_PROMPT
+      .replace(/\{cityName\}/g, city.nameEn || city.name)
+      .replace(/\{interestName\}/g, interest.labelEn)
+      .replace(/\{searchDesc\}/g, getSearchDesc(interest))
+      .replace(/\{blacklistLine\}/g, bl.length ? `Excludes terms: ${bl.join(', ')}` : '')
+      .replace(/\{bangkokShown\}/g, bkk.shown)
+      .replace(/\{bangkokHidden\}/g, bkk.hidden);
+    const raw = await callAI(prompt, 1024);
+    setSpotRunning(false);
+    if (raw && raw.error) { showToast(raw.error, 'error'); return; }
+    const parsed = parseAI(raw);
+    setSpotResult(parsed || { recommendation: 'error', reason: 'Could not parse AI response' });
+  };
+
+  // ── Phase 2: City Sweep ─────────────────────────────────────────
+  const runSweep = async () => {
+    const city = cities[sweepCity];
+    if (!city) return;
+    applyIa();
+    setSweepRunning(true); setSweepResults([]);
+    const bkk = getBangkokRef();
+    const results = [];
+    for (let i = 0; i < interests.length; i++) {
+      const interest = interests[i];
+      setSweepProgress(`${interest.labelEn} (${i + 1}/${interests.length})`);
+      const bl = (interest.blacklist || []);
+      const prompt = DEFAULT_SPOT_PROMPT
+        .replace(/\{cityName\}/g, city.nameEn || city.name)
+        .replace(/\{interestName\}/g, interest.labelEn)
+        .replace(/\{searchDesc\}/g, getSearchDesc(interest))
+        .replace(/\{blacklistLine\}/g, bl.length ? `Excludes terms: ${bl.join(', ')}` : '')
+        .replace(/\{bangkokShown\}/g, bkk.shown)
+        .replace(/\{bangkokHidden\}/g, bkk.hidden);
+      const raw = await callAI(prompt, 512);
+      const parsed = (raw && !raw.error) ? parseAI(raw) : null;
+      results.push({ interest, rec: parsed?.recommendation || 'error', reason: parsed?.reason || (raw?.error || ''), gapNote: parsed?.gapNote || '' });
+      setSweepResults([...results]);
+    }
+    setSweepRunning(false); setSweepProgress('');
+    showToast(`Sweep complete — ${results.length} interests evaluated`, 'success');
+  };
+
+  const applyAllSweep = async () => {
+    const city = cities[sweepCity];
+    if (!city || !sweepResults) return;
+    setSweepApplying(true);
+    const toHide = sweepResults.filter(r => r.rec === 'hide').map(r => r.interest.id);
+    const toShow = sweepResults.filter(r => r.rec === 'show' || r.rec === 'gap').map(r => r.interest.id);
+    const snap = await db.ref('settings/cityHiddenInterests/' + city.id).once('value');
+    const cur = snap.val() || [];
+    const arr = Array.isArray(cur) ? cur : Object.values(cur);
+    let updated = [...arr];
+    toHide.forEach(id => { if (!updated.includes(id)) updated.push(id); });
+    toShow.forEach(id => { updated = updated.filter(x => x !== id); });
+    await db.ref('settings/cityHiddenInterests/' + city.id).set(updated.length ? updated : null);
+    setCityHidden(prev => ({ ...prev, [city.id]: updated }));
+    setSweepApplying(false);
+    showToast('Applied all recommendations', 'success');
+  };
+
+  // ── Phase 3: Discover Missing ───────────────────────────────────
+  const runDiscover = async () => {
+    const city = cities[discCity];
+    if (!city) return;
+    applyIa();
+    setDiscRunning(true); setDiscResults(null);
+    const interestList = interests.map(i => `- ${i.labelEn}: ${getSearchDesc(i)}`).join('\n');
+    const prompt = DEFAULT_DISCOVER_PROMPT
+      .replace(/\{cityName\}/g, city.nameEn || city.name)
+      .replace(/\{interestList\}/g, interestList);
+    const raw = await callAI(prompt, 2048);
+    setDiscRunning(false);
+    if (raw && raw.error) { showToast(raw.error, 'error'); return; }
+    const parsed = parseAIArray(raw);
+    setDiscResults(parsed || []);
+  };
+
+  const createDraftInterest = async (suggestion, idx) => {
+    setDiscCreating(prev => ({ ...prev, [idx]: true }));
+    const id = suggestion.nameEn.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+    const types = suggestion.googleTypes || [];
+    await db.ref('customInterests/' + id).set({
+      id, labelEn: suggestion.nameEn, label: '', icon: '📍',
+      locked: false, searchMode: 'types', types,
+      aiGenerated: true, weight: 3, minStops: 1, maxStops: 10,
+    });
+    setDiscCreating(prev => ({ ...prev, [idx]: false }));
+    showToast(`Draft created: "${suggestion.nameEn}" — add Hebrew name and icon in FouFou`, 'success');
+  };
+
+  const sortedCities = Object.entries(cities).sort((a, b) => (a[1].nameEn||'').localeCompare(b[1].nameEn||''));
+  const recColor = (r) => r === 'show' ? '#10b981' : r === 'hide' ? '#ef4444' : r === 'gap' ? '#f59e0b' : '#94a3b8';
+  const recLabel = (r) => r === 'show' ? '✓ Show' : r === 'hide' ? '✕ Hide' : r === 'gap' ? '⚠ Gap' : '?';
+  const interestIcon = (i) => i.icon?.startsWith('data:') || i.icon?.startsWith('http')
+    ? <img src={i.icon} alt="" style={{ height:'1em', width:'1em', verticalAlign:'middle', objectFit:'contain' }} />
+    : (i.icon || '📍');
+
+  const MODES = [
+    { id:'spot',     label:'Spot Check',       desc:'One interest × one city' },
+    { id:'sweep',    label:'City Sweep',        desc:'All interests for a city' },
+    { id:'discover', label:'Discover Missing',  desc:'What's missing in a city' },
+  ];
+
+  return (
+    <div style={{ minHeight:'100vh', background:'#f8fafc' }}>
+      {/* Header */}
+      <div style={{ background:'white', borderBottom:'1px solid #e2e8f0', padding:'14px 24px',
+        display:'flex', alignItems:'center', justifyContent:'space-between',
+        position:'sticky', top:0, zIndex:10, boxShadow:'0 1px 4px rgba(0,0,0,0.06)' }}>
+        <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+          <button onClick={onBack} style={{ fontSize:13, color:'#6366f1', background:'none', border:'none', cursor:'pointer', fontWeight:600 }}>← Dashboard</button>
+          <div style={{ width:1, height:20, background:'#e2e8f0' }} />
+          <span style={{ fontSize:22 }}>🎯</span>
+          <div>
+            <div style={{ fontWeight:'bold', color:'#1e293b', fontSize:16, lineHeight:1.2 }}>Interest Advisor</div>
+            <div style={{ fontSize:11, color:'#94a3b8' }}>v{VERSION}</div>
+          </div>
+        </div>
+        <button onClick={() => setShowKeyPanel(v => !v)}
+          style={{ fontSize:12, padding:'5px 10px', borderRadius:8, border:'1px solid #e2e8f0',
+            background: iaKey ? '#f0fdf4' : '#fef3c7', cursor:'pointer', color: iaKey ? '#16a34a' : '#d97706' }}>
+          {iaKey ? '🔑 AI ✓' : '🔑 AI Key'}
+        </button>
+      </div>
+
+      {/* AI panel */}
+      {showKeyPanel && (
+        <div style={{ background:'#fefce8', borderBottom:'1px solid #fde68a', padding:'12px 24px' }}>
+          <div style={{ maxWidth:900, margin:'0 auto', display:'flex', flexDirection:'column', gap:10 }}>
+            <div style={{ display:'flex', gap:6 }}>
+              {Object.entries(AI_PROVIDERS).map(([id, p]) => (
+                <button key={id} onClick={() => switchIa(id)}
+                  style={{ padding:'4px 14px', fontSize:12, fontWeight:600, borderRadius:20,
+                    border:'1px solid '+(iaProvider===id?'#d97706':'#e2e8f0'),
+                    background: iaProvider===id?'#fef3c7':'white',
+                    color: iaProvider===id?'#92400e':'#64748b', cursor:'pointer' }}>
+                  {p.name} {getApiKey(id)?'✓':''} {p.free?'(free)':''}
+                </button>
+              ))}
+            </div>
+            <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+              <span style={{ fontSize:12, fontWeight:700, color:'#92400e', minWidth:30 }}>Key</span>
+              <input value={iaKey} onChange={e => setIaKey(e.target.value)} type="password"
+                placeholder={AI_PROVIDERS[iaProvider].keyHint}
+                style={{ flex:2, minWidth:200, padding:'6px 10px', border:'1px solid #fcd34d', borderRadius:8, fontSize:12, fontFamily:'monospace', outline:'none', background:'white' }} />
+              <span style={{ fontSize:12, fontWeight:700, color:'#92400e' }}>Model</span>
+              <input value={iaModel} onChange={e => setIaModel(e.target.value)}
+                style={{ flex:1, minWidth:140, padding:'6px 10px', border:'1px solid #fcd34d', borderRadius:8, fontSize:12, fontFamily:'monospace', outline:'none', background:'white' }} />
+              <a href={AI_PROVIDERS[iaProvider].keyUrl} target="_blank" rel="noreferrer" style={{ fontSize:11, color:'#92400e' }}>Get key ↗</a>
+            </div>
+            <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+              <button onClick={() => setShowKeyPanel(false)} style={{ padding:'6px 14px', fontSize:12, background:'white', border:'1px solid #e2e8f0', borderRadius:8, cursor:'pointer', color:'#64748b' }}>Cancel</button>
+              <button onClick={saveIaKey} style={{ padding:'6px 14px', fontSize:12, background:'#d97706', color:'white', border:'none', borderRadius:8, cursor:'pointer', fontWeight:'bold' }}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={{ maxWidth:860, margin:'0 auto', padding:'28px 24px' }}>
+        {/* Mode tabs */}
+        <div style={{ display:'flex', gap:8, marginBottom:28 }}>
+          {MODES.map(m => (
+            <button key={m.id} onClick={() => setMode(m.id)}
+              style={{ flex:1, padding:'12px 8px', borderRadius:12, cursor:'pointer', textAlign:'center',
+                border:'2px solid '+(mode===m.id?'#6366f1':'#e2e8f0'),
+                background: mode===m.id?'#eef2ff':'white' }}>
+              <div style={{ fontSize:13, fontWeight:700, color: mode===m.id?'#4338ca':'#1e293b' }}>{m.label}</div>
+              <div style={{ fontSize:11, color:'#94a3b8', marginTop:2 }}>{m.desc}</div>
+            </button>
+          ))}
+        </div>
+
+        {dataLoading ? <div style={{ color:'#94a3b8', fontSize:13 }}>Loading...</div> : (<>
+
+        {/* ── PHASE 1: SPOT CHECK ── */}
+        {mode === 'spot' && (
+          <div>
+            <div style={{ display:'flex', gap:12, marginBottom:20, flexWrap:'wrap' }}>
+              <select value={spotInterest} onChange={e => { setSpotInterest(e.target.value); setSpotResult(null); }}
+                style={{ flex:2, minWidth:200, padding:'10px 14px', border:'2px solid #6366f1', borderRadius:10, fontSize:13, color:'#1e293b', background:'white', outline:'none' }}>
+                <option value="">— select interest —</option>
+                {interests.map(i => <option key={i.id} value={i.id}>{i.labelEn}</option>)}
+              </select>
+              <select value={spotCity} onChange={e => { setSpotCity(e.target.value); setSpotResult(null); }}
+                style={{ flex:1, minWidth:160, padding:'10px 14px', border:'2px solid #6366f1', borderRadius:10, fontSize:13, color:'#1e293b', background:'white', outline:'none' }}>
+                <option value="">— select city —</option>
+                {sortedCities.map(([key, c]) => <option key={key} value={key}>{c.nameEn || c.name}</option>)}
+              </select>
+              <button onClick={runSpot} disabled={!spotInterest || !spotCity || spotRunning}
+                style={{ padding:'10px 22px', background:(!spotInterest||!spotCity||spotRunning)?'#a5b4fc':'#6366f1',
+                  color:'white', border:'none', borderRadius:10, fontSize:14, fontWeight:'bold',
+                  cursor:(!spotInterest||!spotCity||spotRunning)?'default':'pointer' }}>
+                {spotRunning ? '⏳ Checking...' : 'Check'}
+              </button>
+            </div>
+
+            {spotInterest && (
+              <div style={{ fontSize:12, color:'#64748b', marginBottom:16, padding:'8px 12px', background:'#f8fafc', borderRadius:8 }}>
+                <b>Searches for:</b> {getSearchDesc(interests.find(i => i.id === spotInterest) || {})}
+              </div>
+            )}
+
+            {spotResult && (
+              <div style={{ background:'white', borderRadius:14, border:'2px solid '+recColor(spotResult.recommendation), padding:'20px 24px' }}>
+                <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:12 }}>
+                  <span style={{ fontSize:18, fontWeight:800, color:recColor(spotResult.recommendation) }}>
+                    {recLabel(spotResult.recommendation)}
+                  </span>
+                  <span style={{ fontSize:14, color:'#1e293b' }}>{spotResult.reason}</span>
+                </div>
+                {spotResult.gapNote && (
+                  <div style={{ fontSize:12, color:'#92400e', background:'#fef3c7', borderRadius:8, padding:'8px 12px', marginBottom:12 }}>
+                    ⚠ Gap: {spotResult.gapNote}
+                  </div>
+                )}
+                {spotResult.recommendation !== 'error' && spotCity && spotInterest && (
+                  <div style={{ display:'flex', gap:8 }}>
+                    <button onClick={async () => { await applyVisibility(cities[spotCity].id, spotInterest, 'show'); showToast('Set to Show', 'success'); }}
+                      style={{ padding:'6px 16px', fontSize:12, background:'#10b981', color:'white', border:'none', borderRadius:8, cursor:'pointer', fontWeight:600 }}>
+                      Apply: Show
+                    </button>
+                    <button onClick={async () => { await applyVisibility(cities[spotCity].id, spotInterest, 'hide'); showToast('Set to Hide', 'success'); }}
+                      style={{ padding:'6px 16px', fontSize:12, background:'#ef4444', color:'white', border:'none', borderRadius:8, cursor:'pointer', fontWeight:600 }}>
+                      Apply: Hide
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── PHASE 2: CITY SWEEP ── */}
+        {mode === 'sweep' && (
+          <div>
+            <div style={{ display:'flex', gap:12, marginBottom:20, alignItems:'center' }}>
+              <select value={sweepCity} onChange={e => { setSweepCity(e.target.value); setSweepResults(null); }}
+                style={{ flex:1, minWidth:200, padding:'10px 14px', border:'2px solid #6366f1', borderRadius:10, fontSize:13, color:'#1e293b', background:'white', outline:'none' }}>
+                <option value="">— select city —</option>
+                {sortedCities.map(([key, c]) => <option key={key} value={key}>{c.nameEn || c.name}</option>)}
+              </select>
+              <button onClick={runSweep} disabled={!sweepCity || sweepRunning}
+                style={{ padding:'10px 22px', background:(!sweepCity||sweepRunning)?'#a5b4fc':'#6366f1',
+                  color:'white', border:'none', borderRadius:10, fontSize:14, fontWeight:'bold',
+                  cursor:(!sweepCity||sweepRunning)?'default':'pointer' }}>
+                {sweepRunning ? `⏳ ${sweepProgress}` : 'Sweep all interests'}
+              </button>
+              {sweepResults && sweepResults.length > 0 && !sweepRunning && (
+                <button onClick={applyAllSweep} disabled={sweepApplying}
+                  style={{ padding:'10px 22px', background:sweepApplying?'#86efac':'#10b981',
+                    color:'white', border:'none', borderRadius:10, fontSize:14, fontWeight:'bold', cursor:sweepApplying?'default':'pointer' }}>
+                  {sweepApplying ? 'Applying...' : '💾 Apply all'}
+                </button>
+              )}
+            </div>
+
+            {sweepResults && sweepResults.length > 0 && (
+              <>
+                <div style={{ display:'flex', gap:16, marginBottom:16, fontSize:12, color:'#64748b' }}>
+                  <span style={{ color:'#10b981', fontWeight:700 }}>✓ Show: {sweepResults.filter(r=>r.rec==='show').length}</span>
+                  <span style={{ color:'#ef4444', fontWeight:700 }}>✕ Hide: {sweepResults.filter(r=>r.rec==='hide').length}</span>
+                  <span style={{ color:'#f59e0b', fontWeight:700 }}>⚠ Gap: {sweepResults.filter(r=>r.rec==='gap').length}</span>
+                </div>
+                {['gap','hide','show'].map(rec => {
+                  const group = sweepResults.filter(r => r.rec === rec);
+                  if (!group.length) return null;
+                  return (
+                    <div key={rec} style={{ marginBottom:20 }}>
+                      <div style={{ fontSize:13, fontWeight:700, color:recColor(rec), marginBottom:8 }}>
+                        {recLabel(rec)} ({group.length})
+                      </div>
+                      <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                        {group.map((r, idx) => {
+                          const curHidden = (cityHidden[cities[sweepCity]?.id] || []).includes(r.interest.id);
+                          return (
+                            <div key={idx} style={{ background:'white', borderRadius:10, border:'1px solid #e2e8f0',
+                              padding:'10px 14px', display:'flex', alignItems:'flex-start', gap:10 }}>
+                              <span style={{ fontSize:12, flexShrink:0, paddingTop:1 }}>{interestIcon(r.interest)}</span>
+                              <div style={{ flex:1, minWidth:0 }}>
+                                <div style={{ fontSize:13, fontWeight:600, color:'#1e293b' }}>
+                                  {r.interest.labelEn}
+                                  <span style={{ fontSize:10, color:'#94a3b8', fontWeight:400, marginLeft:8 }}>
+                                    currently {curHidden ? 'hidden' : 'shown'}
+                                  </span>
+                                </div>
+                                <div style={{ fontSize:12, color:'#64748b', marginTop:2 }}>{r.reason}</div>
+                                {r.gapNote && <div style={{ fontSize:11, color:'#92400e', marginTop:2 }}>Gap: {r.gapNote}</div>}
+                              </div>
+                              <div style={{ display:'flex', gap:5, flexShrink:0 }}>
+                                <button onClick={async () => { await applyVisibility(cities[sweepCity].id, r.interest.id, 'show'); showToast('Shown', 'success'); }}
+                                  style={{ fontSize:11, padding:'3px 9px', borderRadius:6, border:'1px solid #86efac', background:'#f0fdf4', color:'#16a34a', cursor:'pointer' }}>Show</button>
+                                <button onClick={async () => { await applyVisibility(cities[sweepCity].id, r.interest.id, 'hide'); showToast('Hidden', 'success'); }}
+                                  style={{ fontSize:11, padding:'3px 9px', borderRadius:6, border:'1px solid #fca5a5', background:'#fef2f2', color:'#dc2626', cursor:'pointer' }}>Hide</button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── PHASE 3: DISCOVER MISSING ── */}
+        {mode === 'discover' && (
+          <div>
+            <div style={{ display:'flex', gap:12, marginBottom:20, alignItems:'center' }}>
+              <select value={discCity} onChange={e => { setDiscCity(e.target.value); setDiscResults(null); }}
+                style={{ flex:1, minWidth:200, padding:'10px 14px', border:'2px solid #6366f1', borderRadius:10, fontSize:13, color:'#1e293b', background:'white', outline:'none' }}>
+                <option value="">— select city —</option>
+                {sortedCities.map(([key, c]) => <option key={key} value={key}>{c.nameEn || c.name}</option>)}
+              </select>
+              <button onClick={runDiscover} disabled={!discCity || discRunning}
+                style={{ padding:'10px 22px', background:(!discCity||discRunning)?'#a5b4fc':'#6366f1',
+                  color:'white', border:'none', borderRadius:10, fontSize:14, fontWeight:'bold',
+                  cursor:(!discCity||discRunning)?'default':'pointer' }}>
+                {discRunning ? '⏳ Discovering...' : 'Discover missing interests'}
+              </button>
+            </div>
+
+            {discResults && discResults.length > 0 && (
+              <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+                {discResults.map((s, idx) => (
+                  <div key={idx} style={{ background:'white', borderRadius:12, border:'1px solid #e2e8f0', padding:'14px 18px' }}>
+                    <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12 }}>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontSize:14, fontWeight:700, color:'#1e293b', marginBottom:4 }}>{s.nameEn}</div>
+                        <div style={{ fontSize:12, color:'#64748b', marginBottom:6 }}>{s.reason}</div>
+                        <div style={{ fontSize:11, color:'#6366f1', marginBottom:4 }}>
+                          Types: {(s.googleTypes || []).join(', ')}
+                        </div>
+                        {s.otherCities && s.otherCities.length > 0 && (
+                          <div style={{ fontSize:11, color:'#94a3b8' }}>
+                            Also relevant: {s.otherCities.join(', ')}
+                          </div>
+                        )}
+                      </div>
+                      <button onClick={() => createDraftInterest(s, idx)} disabled={!!discCreating[idx]}
+                        style={{ flexShrink:0, padding:'6px 14px', fontSize:12, fontWeight:600,
+                          background: discCreating[idx] ? '#e2e8f0' : '#6366f1', color:'white',
+                          border:'none', borderRadius:8, cursor: discCreating[idx] ? 'default' : 'pointer' }}>
+                        {discCreating[idx] ? 'Creating...' : '+ Add draft'}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {discResults && discResults.length === 0 && (
+              <div style={{ textAlign:'center', padding:'40px 0', color:'#94a3b8', fontSize:14 }}>
+                No missing interests found — coverage looks complete for this city.
+              </div>
+            )}
+          </div>
+        )}
+
+        </>)}
+      </div>
+    </div>
+  );
+};
+
 // ─── Tips Generator ───────────────────────────────────────────────────────────
 const TipsGenerator = ({ showToast, onBack }) => {
   const [cities, setCities]             = useState({});
@@ -2727,6 +3245,8 @@ const SECTIONS = [
     desc:'AI agent adds 5 curated places per area per interest using Google Places.' },
   { id:'tips',      icon:'💡', title:'Tips Generator',       color:'#6366f1', ready:true,
     desc:'Generate practical tourist tips for each city, like the Bangkok tips in FouFou.' },
+  { id:'interests',  icon:'🎯', title:'Interest Advisor',      color:'#8b5cf6', ready:true,
+    desc:'AI checks interest relevance per city, sweeps all interests, discovers missing ones.' },
   { id:'trails',    icon:'🗺️', title:'Trail Generator',      color:'#ec4899', ready:false,
     desc:'Generate 2 recommended saved trails per area per city.' },
 ];
@@ -3023,6 +3543,10 @@ const FouFouBuild = () => {
             onEditCity={(key, entry) => { setEditingCity({ key, entry }); setView('edit-city'); }}
           />
         </>
+      )}
+
+      {view === 'interests' && (
+        <InterestAdvisor showToast={showToast} onBack={() => setView('dashboard')} />
       )}
 
       {view === 'favorites' && (
