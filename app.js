@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.85';
+const VERSION = '0.2.86';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -131,24 +131,34 @@ Reply with ONLY this JSON object, no explanation, no markdown:
 
 const DEFAULT_DISCOVER_PROMPT = `City: {cityName}
 
-You are a travel expert who knows {cityName} well. FouFou tourist app existing interest categories with their actual Google Places search types:
+You are a travel expert. FouFou is a tourist app with these global interest categories and their Google Places search types:
 {interestList}
 
-Your task: find what tourists GENUINELY SEEK in {cityName} that this app CANNOT currently surface well.
+Find interest categories that tourists seek in {cityName} but that are NOT well covered above.
 
-CRITICAL — do not just look at interest names, look at the actual search types. An interest can exist by name but completely miss how things work in a specific city.
-Example: "Shopping Malls" exists but in Rome tourists shop on Via Condotti and Via del Corso — streets and boutiques, not malls. Types like shopping_mall return almost nothing there. A "Shopping Streets" interest with clothing_store, boutique, jewelry_store would serve Rome tourists far better.
+THREE STRICT RULES — violating any one makes a suggestion useless:
 
-Think about:
-- Does this city have a LOCAL FORM of something existing types miss? (street shopping vs malls, piazzas vs parks, canal transport vs regular, wine bars vs generic bars)
-- What is this city FAMOUS for that tourists specifically seek but is not well covered by existing types?
-- Unique architectural, historical, or cultural experiences
-- Local food or drink traditions beyond generic restaurant categories
+RULE 1 — GLOBAL CATEGORIES ONLY
+Interests are shared across all cities. Name them generically, not city-specifically.
+BAD: "Underground Rome & Catacombs" (Rome-only)
+GOOD: "Underground Historic Sites" (applies to Rome, Paris, Naples, Edinburgh...)
+BAD: "Tiber River Activities" (Rome-only)
+GOOD: "Waterfront & Riverfront Walks" (applies to Paris, Budapest, Prague...)
 
-Be specific and probing — not generic. If an interest exists but its types miss the city reality, suggest a city-appropriate alternative with better types.
+RULE 2 — ONLY REAL GOOGLE PLACES API TYPES
+Use ONLY types from this verified list. Do NOT invent types.
+Valid types include: tourist_attraction, museum, art_gallery, church, synagogue, mosque, hindu_temple, historical_landmark, park, cemetery, night_club, bar, wine_bar, spa, clothing_store, jewelry_store, book_store, market, farmers_market, shopping_mall, stadium, theater, movie_theater, library, cultural_center, convention_center, aquarium, zoo, amusement_park, marina, beach, campground, casino, bowling_alley, and all cuisine restaurant types (italian_restaurant, seafood_restaurant, etc.)
+If you cannot find a real type for the concept, do not suggest it.
+
+RULE 3 — ONE COHERENT EXPERIENCE PER INTEREST
+Each interest = one type of tourist experience. Do NOT mix unrelated things.
+BAD: synagogue + jewish_museum + kosher_restaurant (religious site + museum + food = incoherent search results)
+GOOD: synagogue + historical_landmark (Jewish heritage sites — one coherent experience)
+
+Think about: local forms of shopping, food traditions, architectural styles, religious/cultural heritage, outdoor activities, evening entertainment — anything where existing types miss the city reality.
 
 Return ONLY a JSON array, no explanation, no markdown:
-[{"nameEn":"Interest name","reason":"Specific reason for {cityName} tourists","googleTypes":["type1","type2"],"otherCities":["similar cities where also relevant"]}]`;
+[{"nameEn":"Generic global name","reason":"Why this matters — mention {cityName} and other cities","googleTypes":["real_type1","real_type2"],"otherCities":["city1","city2"]}]`;
 
 // ─── Area generation prompts ──────────────────────────────────────────────────
 // AUTO: AI decides count and naming style based on city knowledge
