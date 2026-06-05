@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.81';
+const VERSION = '0.2.82';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -113,21 +113,21 @@ const getFavoritesPrompt = () => localStorage.getItem('foufou_favorites_prompt')
 
 // ─── Interest Advisor prompts ─────────────────────────────────────────────────
 const DEFAULT_SPOT_PROMPT = `City: {cityName}
-
 Interest: {interestName}
-What FouFou searches for: {searchDesc}
+What FouFou searches for in Google Places: {searchDesc}
 {blacklistLine}
-Bangkok (reference) — shown: {bangkokShown}
-Bangkok — hidden: {bangkokHidden}
+Bangkok reference — shown: {bangkokShown}
+Bangkok reference — hidden: {bangkokHidden}
 
 Should "{interestName}" be shown or hidden for tourists in {cityName}?
 
-Consider:
-1. Do tourists genuinely seek this in {cityName}?
-2. Do the search terms actually surface the right places? (e.g. "Shopping Malls" works in Bangkok but not Rome where shopping is on streets — that would be a "gap")
-3. Return "gap" only if the concept exists but the search terms miss it
+Rules:
+1. "show" — tourists genuinely seek this and the search terms will surface relevant places
+2. "hide" — not relevant for tourists in this city
+3. "gap" — the concept exists but the search terms miss it (e.g. "Shopping Malls" works in Bangkok but not Rome where shopping is on streets)
 
-Return ONLY JSON: {"recommendation":"show"|"hide"|"gap","reason":"one sentence","gapNote":"only if gap: what the types miss"}`;
+Reply with ONLY this JSON object, no explanation, no markdown:
+{"recommendation":"show","reason":"one sentence"}`;
 
 const DEFAULT_DISCOVER_PROMPT = `City: {cityName}
 
@@ -2507,12 +2507,17 @@ const InterestAdvisor = ({ showToast, onBack }) => {
   };
 
   const parseAI = (raw) => {
-    try {
-      const s = (raw||'').replace(/```[a-z]*/g,'').replace(/```/g,'').trim();
-      try { return JSON.parse(s); } catch(e) {}
-      const m = s.match(/\{[\s\S]*\}/);
-      if (m) return JSON.parse(m[0]);
-    } catch(e) {}
+    const s = (raw||'').replace(/```[a-z]*/g,'').replace(/```/g,'').trim();
+    try { return JSON.parse(s); } catch(e) {}
+    // Find last valid JSON object in the text
+    let last = s.lastIndexOf('}');
+    while (last > 0) {
+      const start = s.lastIndexOf('{', last);
+      if (start === -1) break;
+      try { return JSON.parse(s.slice(start, last + 1)); } catch(e) {}
+      last = s.lastIndexOf('}', last - 1);
+    }
+    console.warn('[InterestAdvisor] Could not parse:', raw);
     return null;
   };
   const parseAIArray = (raw) => {
@@ -2556,7 +2561,7 @@ const InterestAdvisor = ({ showToast, onBack }) => {
     setSpotRunning(false);
     if (raw && raw.error) { showToast(raw.error, 'error'); return; }
     const parsed = parseAI(raw);
-    setSpotResult(parsed || { recommendation: 'error', reason: 'Could not parse AI response' });
+    setSpotResult(parsed || { recommendation: 'error', reason: 'Could not parse AI response', rawResponse: String(raw).slice(0, 400) });
   };
 
   // ── Phase 2: City Sweep ─────────────────────────────────────────
@@ -2758,6 +2763,11 @@ const InterestAdvisor = ({ showToast, onBack }) => {
                 {spotResult.gapNote && (
                   <div style={{ fontSize:12, color:'#92400e', background:'#fef3c7', borderRadius:8, padding:'8px 12px', marginBottom:12 }}>
                     ⚠ Gap: {spotResult.gapNote}
+                  </div>
+                )}
+                {spotResult.rawResponse && (
+                  <div style={{ fontSize:11, color:'#64748b', background:'#f8fafc', borderRadius:8, padding:'8px 12px', marginBottom:12, fontFamily:'monospace', whiteSpace:'pre-wrap' }}>
+                    {spotResult.rawResponse}
                   </div>
                 )}
                 {spotResult.recommendation !== 'error' && spotCity && spotInterest && (
