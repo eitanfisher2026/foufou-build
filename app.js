@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.82';
+const VERSION = '0.2.83';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -131,15 +131,24 @@ Reply with ONLY this JSON object, no explanation, no markdown:
 
 const DEFAULT_DISCOVER_PROMPT = `City: {cityName}
 
-FouFou tourist app — existing interest categories (name → what it searches for in Google):
+You are a travel expert who knows {cityName} well. FouFou tourist app existing interest categories with their actual Google Places search types:
 {interestList}
 
-What tourist interests are commonly sought by visitors to {cityName} that are NOT covered above?
-Focus on what makes {cityName} special — local experiences, iconic activities, things tourists specifically seek there.
-Only suggest things genuinely missing from the list above.
+Your task: find what tourists GENUINELY SEEK in {cityName} that this app CANNOT currently surface well.
 
-Return ONLY a JSON array (max 8):
-[{"nameEn":"Interest name","reason":"Why tourists look for this in {cityName}","googleTypes":["google_type1","google_type2"],"otherCities":["city1","city2"]}]`;
+CRITICAL — do not just look at interest names, look at the actual search types. An interest can exist by name but completely miss how things work in a specific city.
+Example: "Shopping Malls" exists but in Rome tourists shop on Via Condotti and Via del Corso — streets and boutiques, not malls. Types like shopping_mall return almost nothing there. A "Shopping Streets" interest with clothing_store, boutique, jewelry_store would serve Rome tourists far better.
+
+Think about:
+- Does this city have a LOCAL FORM of something existing types miss? (street shopping vs malls, piazzas vs parks, canal transport vs regular, wine bars vs generic bars)
+- What is this city FAMOUS for that tourists specifically seek but is not well covered by existing types?
+- Unique architectural, historical, or cultural experiences
+- Local food or drink traditions beyond generic restaurant categories
+
+Be specific and probing — not generic. If an interest exists but its types miss the city reality, suggest a city-appropriate alternative with better types.
+
+Return ONLY a JSON array, no explanation, no markdown:
+[{"nameEn":"Interest name","reason":"Specific reason for {cityName} tourists","googleTypes":["type1","type2"],"otherCities":["similar cities where also relevant"]}]`;
 
 // ─── Area generation prompts ──────────────────────────────────────────────────
 // AUTO: AI decides count and naming style based on city knowledge
@@ -2620,10 +2629,11 @@ const InterestAdvisor = ({ showToast, onBack }) => {
     const prompt = DEFAULT_DISCOVER_PROMPT
       .replace(/\{cityName\}/g, city.nameEn || city.name)
       .replace(/\{interestList\}/g, interestList);
-    const raw = await callAI(prompt, 2048);
+    const raw = await callAI(prompt, 4096);
     setDiscRunning(false);
     if (raw && raw.error) { showToast(raw.error, 'error'); return; }
     const parsed = parseAIArray(raw);
+    if (!parsed) console.warn('[Discover] Raw response:', raw);
     setDiscResults(parsed || []);
   };
 
@@ -2907,8 +2917,10 @@ const InterestAdvisor = ({ showToast, onBack }) => {
               </div>
             )}
             {discResults && discResults.length === 0 && (
-              <div style={{ textAlign:'center', padding:'40px 0', color:'#94a3b8', fontSize:14 }}>
-                No missing interests found — coverage looks complete for this city.
+              <div style={{ padding:'24px', background:'white', borderRadius:12, border:'1px solid #e2e8f0' }}>
+                <div style={{ color:'#94a3b8', fontSize:14, marginBottom:8 }}>
+                  No suggestions returned. Try Claude or GPT-4o for more probing results — Gemini tends to be conservative here.
+                </div>
               </div>
             )}
           </div>
