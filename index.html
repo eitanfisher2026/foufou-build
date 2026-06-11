@@ -1,60 +1,229 @@
 <!DOCTYPE html>
-<html lang="en" dir="ltr">
+<!--
+  FouFou — City Trail Generator
+  Copyright © 2026 Eitan Fisher. All Rights Reserved.
+-->
+<html lang="he" dir="rtl">
+<script>
+(function() {
+  var lang = localStorage.getItem('city_explorer_lang') || 'he';
+  document.documentElement.lang = lang;
+  document.documentElement.dir = lang === 'he' ? 'rtl' : 'ltr';
+})();
+</script>
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FouFou Build</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏗️</text></svg>">
-  <style>
-    body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #f8fafc; }
-    #root { min-height: 100vh; }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FouFou</title>
+    <link rel="manifest" href="manifest.json?v=3.1.0">
+    <link rel="icon" type="image/x-icon" href="favicon.ico?v=3.1.0">
+    <link rel="icon" type="image/png" sizes="32x32" href="icon-32x32.png?v=3">
+    <link rel="apple-touch-icon" sizes="180x180" href="icon-180x180.png?v=3.1.0">
+    <meta name="theme-color" content="#be123c">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="FouFou">
+    <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+    <link rel="preconnect" href="https://cdn.tailwindcss.com" crossorigin>
+    <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://unpkg.com" crossorigin>
+    <!-- Preload app files so they download in parallel with CDN -->
+    <link rel="preload" href="app-data.js?v=4.0.5" as="script">
+    <link rel="preload" href="app-code.js?v=4.0.5" as="fetch" crossorigin="anonymous">
+    <style>
+      html, body { overscroll-behavior: none; margin: 0; }
+      @keyframes slideUp { from { transform: translateY(100px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+      @keyframes slideDown { from { transform: translateY(-30px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+      @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+      @keyframes headerShimmer { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.1); } }
+      @keyframes catBounce { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+      @keyframes glassesUp { 0%,70% { transform: translateY(0); } 80% { transform: translateY(-7px); } 92%,100% { transform: translateY(0); } }
+      @keyframes winkRight { 0%,82% { transform: scaleY(1); } 87% { transform: scaleY(0.1); } 92%,100% { transform: scaleY(1); } }
+      @keyframes tailWag { 0%,100% { transform: rotate(0deg); } 25% { transform: rotate(12deg); } 75% { transform: rotate(-8deg); } }
+      @keyframes dotPulse { 0%,80%,100% { opacity: 0.3; } 40% { opacity: 1; } }
+      @keyframes rateGlow { 0%, 100% { box-shadow: 0 2px 4px rgba(245, 158, 11, 0.4); transform: scale(1); } 50% { box-shadow: 0 2px 10px rgba(245, 158, 11, 0.7); transform: scale(1.05); } }
+      .foufou-rate-pulse { animation: rateGlow 2s ease-in-out infinite; }
+      .foufou-rate-pulse:hover { animation: none; transform: scale(1.08); box-shadow: 0 3px 8px rgba(245, 158, 11, 0.6) !important; transition: all 0.15s; }
+      .view-fade-in { animation: fadeIn 0.2s ease-out; }
+      .overflow-y-auto::-webkit-scrollbar { width: 6px; }
+      .overflow-y-auto::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 10px; }
+      .overflow-y-auto::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+      .overflow-y-auto::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+      .overflow-y-auto { scrollbar-width: thin; scrollbar-color: #cbd5e1 #f1f5f9; -webkit-overflow-scrolling: touch; will-change: scroll-position; transform: translateZ(0); }
+      .overflow-auto, .overflow-y-auto, .overflow-x-auto { -webkit-overflow-scrolling: touch; }
+      .space-y-0\.5 > *, .space-y-1 > *, .space-y-2 > *, .space-y-3 > * { contain: layout style; }
+      @media (hover: none) and (pointer: coarse) {
+        .hover\:bg-emerald-100:hover, .hover\:bg-orange-50:hover, .hover\:bg-blue-100:hover, .hover\:bg-red-100:hover, .hover\:bg-gray-100:hover { background-color: inherit !important; }
+        .hover\:underline:hover { text-decoration: inherit !important; }
+      }
+    </style>
 </head>
 <body>
-  <div id="root">
-    <div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;gap:12px;color:#64748b">
-      <div style="font-size:40px">🏗️</div>
-      <div style="font-weight:bold;font-size:20px;color:#1e293b">FouFou Build</div>
-      <div style="font-size:13px">Loading...</div>
+    <!-- ============================================================ -->
+    <!-- ANIMATED SPLASH — ~6KB, renders in <100ms                    -->
+    <!-- ============================================================ -->
+    <div id="root">
+      <div id="splash" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:14px;background:linear-gradient(135deg,#E17055 0%,#FDCB6E 100%)">
+        <div style="animation:catBounce 2s ease-in-out infinite">
+          <svg viewBox="0 0 200 200" width="100" height="100" style="filter:drop-shadow(0 4px 12px rgba(0,0,0,0.2))">
+            <!-- Face -->
+            <circle cx="100" cy="108" r="52" fill="#FFE8D6"/>
+            <!-- Ears outer -->
+            <polygon points="62,72 50,28 82,58" fill="#FFE8D6"/>
+            <polygon points="138,72 150,28 118,58" fill="#FFE8D6"/>
+            <!-- Ears inner -->
+            <polygon points="64,70 54,34 80,58" fill="#FFCBA4"/>
+            <polygon points="136,70 146,34 120,58" fill="#FFCBA4"/>
+            <!-- Eyes (behind glasses, visible during peek) -->
+            <circle cx="81" cy="103" r="4" fill="#5D4037" opacity="0.4"/>
+            <circle cx="119" cy="103" r="4" fill="#5D4037" opacity="0.4"/>
+            <circle cx="82" cy="102" r="1.5" fill="white" opacity="0.4"/>
+            <circle cx="120" cy="102" r="1.5" fill="white" opacity="0.4"/>
+            <!-- Sunglasses (peek up animation) -->
+            <g style="animation:glassesUp 3.5s ease-in-out infinite;transform-origin:100px 100px">
+              <rect x="68" y="94" width="26" height="19" rx="6" fill="#2D2D2D" opacity="0.92"/>
+              <g style="animation:winkRight 4.5s ease-in-out infinite;transform-origin:119px 103px">
+                <rect x="106" y="94" width="26" height="19" rx="6" fill="#2D2D2D" opacity="0.92"/>
+              </g>
+              <line x1="94" y1="103" x2="106" y2="103" stroke="#2D2D2D" stroke-width="3"/>
+              <line x1="68" y1="100" x2="56" y2="95" stroke="#2D2D2D" stroke-width="2.5" stroke-linecap="round"/>
+              <line x1="132" y1="100" x2="144" y2="95" stroke="#2D2D2D" stroke-width="2.5" stroke-linecap="round"/>
+            </g>
+            <!-- Nose -->
+            <path d="M95,120 L100,125 L105,120 Z" fill="#FF8C94"/>
+            <!-- Mouth -->
+            <path d="M90,130 Q100,138 110,130" fill="none" stroke="#8B6F5E" stroke-width="2.5" stroke-linecap="round"/>
+            <!-- Tail (wags) -->
+            <g style="animation:tailWag 1s ease-in-out infinite;transform-origin:148px 145px">
+              <path d="M148,140 Q170,125 165,100" fill="none" stroke="#FFE8D6" stroke-width="10" stroke-linecap="round"/>
+            </g>
+          </svg>
+        </div>
+        <div style="color:white;font-size:22px;font-weight:bold;font-family:system-ui;text-shadow:0 2px 4px rgba(0,0,0,0.2)">FouFou</div>
+        <div style="color:rgba(255,255,255,0.9);font-size:12px;font-family:system-ui">🍜🏛️🎭 City Trail Generator</div>
+        <div style="margin-top:10px;display:flex;align-items:center;gap:4px">
+          <span id="splash-status" style="color:rgba(255,255,255,0.75);font-size:12px;font-family:system-ui">Loading</span>
+          <span style="color:rgba(255,255,255,0.75);font-size:12px;font-family:system-ui">
+            <span style="animation:dotPulse 1.4s infinite;animation-delay:0s">.</span><span style="animation:dotPulse 1.4s infinite;animation-delay:0.2s">.</span><span style="animation:dotPulse 1.4s infinite;animation-delay:0.4s">.</span>
+          </span>
+        </div>
+      </div>
     </div>
-  </div>
 
-  <!-- React 18 (same version as foufou-dev) -->
-  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.development.js"></script>
-  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.development.js"></script>
+    <!-- ============================================================ -->
+    <!-- BOOT — inline setup + load external files                    -->
+    <!-- ============================================================ -->
+    <script>
+    window.__sp = function(p, msg) {
+      var t = document.getElementById('splash-status');
+      if (t) t.textContent = msg;
+    };
+    window.__splashProgress = window.__sp;
+    window.BKK = window.BKK || {};
+    window.__leafletReady = null;
+    window.BKK.loadLeaflet = function() {
+      if (window.__leafletReady) return window.__leafletReady;
+      if (typeof L !== 'undefined') return Promise.resolve(true);
+      window.__leafletReady = new Promise(function(resolve) {
+        var css = document.createElement('link');
+        css.rel = 'stylesheet'; css.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+        document.head.appendChild(css);
+        var js = document.createElement('script');
+        js.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+        js.onload = function() { resolve(true); };
+        js.onerror = function() { resolve(false); };
+        document.head.appendChild(js);
+      });
+      return window.__leafletReady;
+    };
+    </script>
 
-  <!-- Tailwind CSS -->
-  <script src="https://cdn.tailwindcss.com"></script>
+    <!-- App data: i18n + cities + config + utils (preloaded, separate cache) -->
+    <script src="app-data.js?v=4.0.5"></script>
 
-  <!-- Babel standalone — JSX in browser, fine for an admin tool -->
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-
-  <!-- Firebase 9.22.0 compat (same version as foufou-dev) -->
-  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
-
-  <!-- Leaflet (loaded on demand by the map editor) -->
-  <script>
-  window.loadLeaflet = function() {
-    if (window._leafletReady) return window._leafletReady;
-    if (typeof L !== 'undefined') return Promise.resolve(true);
-    window._leafletReady = new Promise(function(resolve) {
-      var css = document.createElement('link');
-      css.rel = 'stylesheet';
-      css.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
-      document.head.appendChild(css);
-      var js = document.createElement('script');
-      js.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
-      js.onload = function() { resolve(true); };
-      js.onerror = function() { resolve(false); };
-      document.head.appendChild(js);
+    <!-- CDN libraries -->
+    <script>window.__sp(0, 'Loading UI...');</script>
+    <script defer crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script defer crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script defer src="https://cdn.tailwindcss.com"></script>
+    <script>
+      window.addEventListener('DOMContentLoaded', function() {
+        if (window.tailwind) {
+          tailwind.config = { theme: { extend: { borderWidth: { '3': '3px', '4': '4px' } } } };
+        }
+      });
+    </script>
+    <!-- Firebase (non-blocking, parallel — 5 libs in parallel saves ~4 RTTs on slow networks) -->
+    <script>
+    window.__firebaseReady = new Promise(function(resolve) {
+      var libs = ['firebase-app-compat.js','firebase-auth-compat.js','firebase-database-compat.js','firebase-storage-compat.js','firebase-analytics-compat.js'];
+      var settled = false;
+      var loadOne = function(lib) {
+        return new Promise(function(res) {
+          var s = document.createElement('script');
+          s.src = 'https://www.gstatic.com/firebasejs/9.22.0/' + lib;
+          // Dynamic scripts default to async — execute in download order, breaking
+          // firebase-app-compat-must-execute-first. async=false preserves parallel
+          // downloads but forces insertion-order execution.
+          s.async = false;
+          s.onload = function() { res(true); };
+          s.onerror = function() { res(false); };
+          document.head.appendChild(s);
+        });
+      };
+      Promise.all(libs.map(loadOne)).then(function(results) {
+        if (settled) return;
+        settled = true;
+        resolve(results.every(Boolean));
+      });
+      setTimeout(function() { if (!settled) { settled = true; resolve(false); } }, 15000);
     });
-    return window._leafletReady;
-  };
-  </script>
+    </script>
 
-  <!-- App -->
-  <script type="text/babel" src="app.js"></script>
+    <!-- Fetch + run the pre-compiled app code (no browser Babel needed) -->
+    <!-- v3.23.51: poll for React directly instead of trusting document.readyState. When readyState
+         transitions to 'interactive' the parser is done but defer scripts (React/ReactDOM/Tailwind)
+         may not have executed yet — that race condition caused "React is not defined" on slow networks. -->
+    <script>
+    fetch('app-code.js?v=4.0.5').then(function(r) { return r.text(); }).then(function(code) {
+      var run = function() {
+        try {
+          var s = document.createElement('script');
+          s.textContent = code;
+          document.body.appendChild(s);
+        } catch(err) {
+          console.error('[APP]', err);
+          document.getElementById('splash-status').textContent = 'Error: ' + err.message;
+        }
+      };
+      var attempts = 0;
+      var maxAttempts = 200; // ~10s at 50ms — generous timeout for slow CDN
+      var waitForReact = function() {
+        if (typeof React !== 'undefined' && typeof ReactDOM !== 'undefined') {
+          run();
+        } else if (++attempts < maxAttempts) {
+          setTimeout(waitForReact, 50);
+        } else {
+          document.getElementById('splash-status').textContent = 'React failed to load. Refresh page.';
+        }
+      };
+      waitForReact();
+    }).catch(function(err) {
+      document.getElementById('splash-status').textContent = 'Network error. Refresh page.';
+    });
+    </script>
+
+    <!-- Service Worker — required for Google Play TWA + offline fallback -->
+    <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function() {
+        navigator.serviceWorker.register('sw.js?v=4.0.5')
+          .catch(function(err) { console.error('[SW] Registration failed:', err); });
+      });
+    }
+    </script>
 </body>
 </html>
