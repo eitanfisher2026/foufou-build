@@ -2479,6 +2479,49 @@ const GOOGLE_PLACE_TYPES = [
   'library',
 ].join(', ');
 
+// ─── Canonical interest icon URLs (Twemoji CDN) — source of truth for migration ──
+const _tw = 'https://twemoji.maxcdn.com/v/latest/72x72/';
+const INTEREST_ICON_URLS = {
+  'i_all_restaurants':          _tw+'1f37d.png',
+  'i_architecture_and_museums': _tw+'1f3db.png',
+  'i_asian_food':               _tw+'1f35c.png',
+  'i_beaches_waterfront':       _tw+'1f3d6.png',
+  'i_brunch_coffee':            _tw+'1f950.png',
+  'i_cat_dog_coffee':           _tw+'1f431.png',
+  'i_churches':                 _tw+'26ea.png',
+  'i_coffee':                   _tw+'2615.png',
+  'i_craft_beer_pubs':          _tw+'1f37a.png',
+  'i_crafts_artisans':          _tw+'1f9f5.png',
+  'i_day_markets':              _tw+'1f9fa.png',
+  'i_day_street':               _tw+'1f6e3.png',
+  'i_entertainment':            _tw+'1f3ad.png',
+  'i_fountain_and_statues':     _tw+'26f2.png',
+  'i_galleries':                _tw+'1f5bc.png',
+  'i_kids':                     _tw+'1f3a1.png',
+  'i_mediterranean_food':       _tw+'1f959.png',
+  'i_mosque':                   _tw+'1f54c.png',
+  'i_nature':                   _tw+'1f33f.png',
+  'i_nightlife':                _tw+'1faa9.png',
+  'i_night_markets':            _tw+'1f3ee.png',
+  'i_night_street':             _tw+'1f303.png',
+  'i_parks_and_gardens':        _tw+'1f333.png',
+  'i_rooftop':                  _tw+'1f942.png',
+  'i_scenic_viewpoints':        _tw+'1f52d.png',
+  'i_shopping_malls':           _tw+'1f3ea.png',
+  'i_spa_wellness':             _tw+'1f9d8.png',
+  'i_specialty_stores':         _tw+'1f6cd.png',
+  'i_sports_stadiums':          _tw+'26bd.png',
+  'i_street_art_murals':        _tw+'1f3a8.png',
+  'i_street_food_day':          _tw+'1f362.png',
+  'i_street_food_night':        _tw+'1f371.png',
+  'i_sweets':                   _tw+'1f9c1.png',
+  'i_synagogue':                _tw+'1f54d.png',
+  'i_temples':                  _tw+'1f6d5.png',
+  'i_vegetarian_food':          _tw+'1f957.png',
+  'i_vintage':                  _tw+'1f570.png',
+  'i_wine_cocktail_bars':       _tw+'1f377.png',
+};
+
 // ─── Interest Advisor ────────────────────────────────────────────────────────
 const InterestAdvisor = ({ showToast, onBack }) => {
   const [mode, setMode]           = useState('spot'); // 'spot'|'sweep'|'discover'|'types'
@@ -2667,6 +2710,28 @@ Return JSON only, no explanation: {"types": [...]} or {"textSearch": "..."} or {
     const ids = Object.keys(typeEdits);
     for (const id of ids) await saveTypeConfig(id);
     showToast(`Saved ${ids.length} interest configs`, 'success');
+  };
+
+  const [iconMigrating, setIconMigrating] = useState(false);
+  const migrateIconsToFirebase = async () => {
+    if (!window.confirm('This will write the canonical Twemoji URLs into the icon field of all matching interests in Firebase, replacing old base64 or emoji values. Continue?')) return;
+    setIconMigrating(true);
+    const snap = await db.ref('customInterests').once('value');
+    const raw = snap.val() || {};
+    const updates = {};
+    let count = 0;
+    Object.entries(raw).forEach(([key, interest]) => {
+      const url = INTEREST_ICON_URLS[interest.id];
+      if (url) {
+        updates['customInterests/' + key + '/icon'] = url;
+        count++;
+      }
+    });
+    if (count === 0) { showToast('No matching interests found', 'error'); setIconMigrating(false); return; }
+    await db.ref().update(updates);
+    setIconMigrating(false);
+    showToast(`✅ Migrated icons for ${count} interests to Firebase. You can now remove interestIconPaths from FouFou-dev.`, 'success');
+    setInterests(prev => prev.map(i => INTEREST_ICON_URLS[i.id] ? { ...i, icon: INTEREST_ICON_URLS[i.id] } : i));
   };
 
   const getTypeDesc = (interest) => {
@@ -3156,7 +3221,7 @@ Return JSON only: {"types": [...]} or {"textSearch": "..."} or {"noGoogleSearch"
         {/* ── PHASE 4: TYPE EDITOR ── */}
         {mode === 'types' && (
           <div>
-            <div style={{ display:'flex', gap:10, marginBottom:20, alignItems:'center', flexWrap:'wrap' }}>
+            <div style={{ display:'flex', gap:10, marginBottom:12, alignItems:'center', flexWrap:'wrap' }}>
               <div style={{ flex:1, fontSize:13, color:'#64748b' }}>
                 AI suggests optimised Google Place types for each interest using the full Table A type list.
                 Changes are saved to <code style={{ fontSize:11 }}>settings/interestConfig</code> in Firebase.
@@ -3175,6 +3240,19 @@ Return JSON only: {"types": [...]} or {"textSearch": "..."} or {"noGoogleSearch"
                   💾 Save all ({Object.keys(typeEdits).length})
                 </button>
               )}
+            </div>
+            <div style={{ background:'#fef3c7', border:'1px solid #fde68a', borderRadius:10, padding:'10px 14px', marginBottom:20,
+              display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
+              <div style={{ fontSize:12, color:'#92400e' }}>
+                <strong>One-time migration:</strong> Write canonical Twemoji URLs into Firebase <code style={{ fontSize:11 }}>customInterests[*].icon</code> — making Firebase the single source of truth for icons.
+              </div>
+              <button onClick={migrateIconsToFirebase} disabled={iconMigrating}
+                style={{ flexShrink:0, padding:'7px 16px', fontSize:12, fontWeight:700,
+                  background: iconMigrating ? '#fde68a' : '#d97706',
+                  color:'white', border:'none', borderRadius:8,
+                  cursor: iconMigrating ? 'default' : 'pointer', whiteSpace:'nowrap' }}>
+                {iconMigrating ? '⏳ Migrating...' : '🔁 Migrate Icons → Firebase'}
+              </button>
             </div>
 
             <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
