@@ -2755,18 +2755,47 @@ Return JSON array only, no explanation:
 
   const pickIcon = async (interest, suggestion) => {
     setIconSaving(prev => ({ ...prev, [interest.id]: true }));
-    const url = `${_tw}${suggestion.hex}.png`;
+    const emoji = suggestion.emoji; // store the character, not the URL
     const snap = await db.ref('customInterests').orderByChild('id').equalTo(interest.id).once('value');
     const updates = {};
-    snap.forEach(child => { updates['customInterests/' + child.key + '/icon'] = url; });
+    snap.forEach(child => { updates['customInterests/' + child.key + '/icon'] = emoji; });
     if (Object.keys(updates).length > 0) {
       await db.ref().update(updates);
-      setInterests(prev => prev.map(i => i.id === interest.id ? { ...i, icon: url } : i));
+      setInterests(prev => prev.map(i => i.id === interest.id ? { ...i, icon: emoji } : i));
       showToast(`Icon updated for ${interest.labelEn}`, 'success');
     }
     setIconSaving(prev => ({ ...prev, [interest.id]: false }));
     setIconPickingId(null);
     setIconSuggestions(prev => { const n = {...prev}; delete n[interest.id]; return n; });
+  };
+
+  const [iconConvertRunning, setIconConvertRunning] = useState(false);
+  const convertUrlIconsToEmoji = async () => {
+    setIconConvertRunning(true);
+    const snap = await db.ref('customInterests').once('value');
+    const raw = snap.val() || {};
+    const updates = {};
+    Object.entries(raw).forEach(([key, interest]) => {
+      if (interest.icon?.startsWith('http')) {
+        const hex = interest.icon.match(/\/72x72\/([0-9a-f]+)\.png/)?.[1];
+        if (hex) {
+          try {
+            const emoji = String.fromCodePoint(parseInt(hex, 16));
+            updates['customInterests/' + key + '/icon'] = emoji;
+          } catch {}
+        }
+      }
+    });
+    if (Object.keys(updates).length === 0) { showToast('No URL icons found — already converted', 'success'); setIconConvertRunning(false); return; }
+    await db.ref().update(updates);
+    setInterests(prev => prev.map(i => {
+      const entry = Object.entries(raw).find(([, v]) => v.id === i.id);
+      return entry && updates['customInterests/' + entry[0] + '/icon']
+        ? { ...i, icon: updates['customInterests/' + entry[0] + '/icon'] }
+        : i;
+    }));
+    setIconConvertRunning(false);
+    showToast(`Converted ${Object.keys(updates).length} icons from URL to emoji character`, 'success');
   };
 
   const getTypeDesc = (interest) => {
@@ -2948,9 +2977,15 @@ Return JSON only: {"types": [...]} or {"textSearch": "..."} or {"noGoogleSearch"
   const sortedCities = Object.entries(cities).sort((a, b) => (a[1].nameEn||'').localeCompare(b[1].nameEn||''));
   const recColor = (r) => r === 'show' ? '#10b981' : r === 'hide' ? '#ef4444' : r === 'gap' ? '#f59e0b' : '#94a3b8';
   const recLabel = (r) => r === 'show' ? '✓ Show' : r === 'hide' ? '✕ Hide' : r === 'gap' ? '⚠ Gap' : '?';
-  const interestIcon = (i) => i.icon?.startsWith('data:') || i.icon?.startsWith('http')
-    ? <img src={i.icon} alt="" style={{ height:'1em', width:'1em', verticalAlign:'middle', objectFit:'contain' }} />
-    : (i.icon || '📍');
+  const interestIcon = (i) => {
+    const ic = i.icon || '📍';
+    if (ic.startsWith('data:') || ic.startsWith('http'))
+      return <img src={ic} alt="" style={{ height:'1em', width:'1em', verticalAlign:'middle', objectFit:'contain' }} />;
+    const cp = [...ic][0]?.codePointAt(0);
+    if (cp && cp > 127)
+      return <img src={`${_tw}${cp.toString(16)}.png`} alt="" style={{ height:'1em', width:'1em', verticalAlign:'middle', objectFit:'contain' }} />;
+    return ic;
+  };
 
   const MODES = [
     { id:'spot',     label:'Spot Check',       desc:'One interest × one city' },
@@ -3261,6 +3296,14 @@ Return JSON only: {"types": [...]} or {"textSearch": "..."} or {"noGoogleSearch"
                 AI suggests optimised Google Place types for each interest using the full Table A type list.
                 Changes are saved to <code style={{ fontSize:11 }}>settings/interestConfig</code> in Firebase.
               </div>
+              <button onClick={convertUrlIconsToEmoji} disabled={iconConvertRunning}
+                style={{ padding:'9px 18px', fontSize:12, fontWeight:700,
+                  background: iconConvertRunning ? '#e2e8f0' : '#f1f5f9',
+                  color: iconConvertRunning ? '#94a3b8' : '#475569',
+                  border:'1px solid #e2e8f0', borderRadius:10,
+                  cursor: iconConvertRunning ? 'default' : 'pointer' }}>
+                {iconConvertRunning ? '⏳ Converting...' : '🔄 Convert icons → emoji'}
+              </button>
               <button onClick={runTypeSuggestAll} disabled={typeSuggestAll || !iaKey}
                 style={{ padding:'9px 18px', fontSize:12, fontWeight:700,
                   background: (typeSuggestAll || !iaKey) ? '#a5b4fc' : '#6366f1',
