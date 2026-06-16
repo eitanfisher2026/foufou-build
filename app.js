@@ -2436,9 +2436,52 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
   );
 };
 
+// ─── Google Place Types (Table A — valid for search requests) ────────────────
+const GOOGLE_PLACE_TYPES = [
+  // Culture
+  'art_gallery','art_museum','art_studio','auditorium','castle','cultural_landmark',
+  'fountain','historical_place','history_museum','monument','museum',
+  'performing_arts_theater','sculpture',
+  // Entertainment & Recreation
+  'amusement_center','amusement_park','aquarium','botanical_garden','casino',
+  'comedy_club','concert_hall','cultural_center','dance_hall','event_venue',
+  'ferris_wheel','garden','hiking_area','historical_landmark','live_music_venue',
+  'marina','movie_theater','national_park','night_club','observation_deck',
+  'opera_house','park','philharmonic_hall','picnic_ground','planetarium',
+  'plaza','skateboard_park','state_park','tourist_attraction','vineyard',
+  'visitor_center','water_park','wildlife_park','zoo',
+  // Food & Drink
+  'bar','bar_and_grill','beer_garden','bistro','brewery','brewpub',
+  'brunch_restaurant','buffet_restaurant','cafe','cake_shop','candy_store',
+  'cocktail_bar','coffee_roastery','coffee_shop','confectionery',
+  'dessert_restaurant','dessert_shop','diner','donut_shop','fast_food_restaurant',
+  'fine_dining_restaurant','food_court','gastropub','hookah_bar','ice_cream_shop',
+  'juice_shop','lounge_bar','pastry_shop','pub','restaurant',
+  'snack_bar','tea_house','wine_bar','winery',
+  'asian_restaurant','chinese_restaurant','french_restaurant','greek_restaurant',
+  'indian_restaurant','italian_restaurant','japanese_restaurant','korean_restaurant',
+  'mediterranean_restaurant','mexican_restaurant','middle_eastern_restaurant',
+  'seafood_restaurant','thai_restaurant','turkish_restaurant','vietnamese_restaurant',
+  'vegan_restaurant','vegetarian_restaurant',
+  // Health & Wellness
+  'massage','massage_spa','sauna','spa','wellness_center','yoga_studio',
+  // Natural Features
+  'beach','island','lake','mountain_peak','nature_preserve','river','scenic_spot','woods',
+  // Places of Worship
+  'buddhist_temple','church','hindu_temple','mosque','shinto_shrine','synagogue',
+  // Shopping
+  'book_store','clothing_store','cosmetics_store','department_store',
+  'farmers_market','flea_market','gift_shop','jewelry_store','market',
+  'shopping_mall','thrift_store',
+  // Sports
+  'arena','athletic_field','fitness_center','golf_course','gym','sports_complex','stadium',
+  // Other POI
+  'library',
+].join(', ');
+
 // ─── Interest Advisor ────────────────────────────────────────────────────────
 const InterestAdvisor = ({ showToast, onBack }) => {
-  const [mode, setMode]           = useState('spot'); // 'spot'|'sweep'|'discover'
+  const [mode, setMode]           = useState('spot'); // 'spot'|'sweep'|'discover'|'types'
   const [cities, setCities]       = useState({});
   const [interests, setInterests] = useState([]);
   const [cityHidden, setCityHidden] = useState({}); // {cityId: [interestId,...]}
@@ -2469,6 +2512,12 @@ const InterestAdvisor = ({ showToast, onBack }) => {
   const [discRunning, setDiscRunning]   = useState(false);
   const [discCreating, setDiscCreating] = useState({});
 
+  // Phase 4 — Type Editor
+  const [typeEdits, setTypeEdits]           = useState({}); // {id: {types,textSearch,noGoogleSearch}}
+  const [typeSuggesting, setTypeSuggesting] = useState({}); // {id: bool}
+  const [typeSaving, setTypeSaving]         = useState({}); // {id: bool}
+  const [typeSuggestAll, setTypeSuggestAll] = useState(false);
+
   const switchIa = (p) => { setIaProvider(p); setIaKey(getApiKey(p)); setIaModel(getModel(p)); };
   const saveIaKey = () => {
     localStorage.setItem('foufou_ai_provider', iaProvider);
@@ -2491,15 +2540,18 @@ const InterestAdvisor = ({ showToast, onBack }) => {
       db.ref('customInterests').once('value'),
       db.ref('settings/interestGroups').once('value'),
       db.ref('settings/cityHiddenInterests').once('value'),
-    ]).then(([citySnap, intSnap, grpSnap, hidSnap]) => {
+      db.ref('settings/interestConfig').once('value'),
+    ]).then(([citySnap, intSnap, grpSnap, hidSnap, cfgSnap]) => {
       setCities(citySnap.val() || {});
       setCityHidden(hidSnap.val() || {});
       const raw = intSnap.val() || {};
+      const cfg = cfgSnap.val() || {};
       const groups = grpSnap.val() || {};
       const groupOrder = {};
       Object.keys(groups).forEach((g, i) => { groupOrder[g] = groups[g]?.order ?? i; });
       const list = Object.values(raw)
         .filter(i => i.locked === true && i.labelEn)
+        .map(i => ({ ...(cfg[i.id] || {}), ...i }))
         .sort((a, b) => {
           const ga = groupOrder[a.group || ''] ?? 99, gb = groupOrder[b.group || ''] ?? 99;
           if (ga !== gb) return ga - gb;
@@ -2557,6 +2609,80 @@ const InterestAdvisor = ({ showToast, onBack }) => {
       : arr.filter(id => id !== interestId);
     await db.ref('settings/cityHiddenInterests/' + cityId).set(updated.length ? updated : null);
     setCityHidden(prev => ({ ...prev, [cityId]: updated }));
+  };
+
+  // ── Phase 4: Type Editor ────────────────────────────────────────
+  const runTypeSuggest = async (interest) => {
+    applyIa();
+    setTypeSuggesting(prev => ({ ...prev, [interest.id]: true }));
+    const currentTypes = Array.isArray(interest.types) ? interest.types : Object.values(interest.types || {});
+    const prompt = `You are configuring interest search for a tourist guide app using the Google Places API (New).
+
+Interest: "${interest.labelEn}" (id: ${interest.id})
+Current types: [${currentTypes.join(', ') || 'none'}]
+Current textSearch: "${interest.textSearch || ''}"
+noGoogleSearch: ${interest.noGoogleSearch || false}
+
+Select the best Google Place API types for this interest from the list below.
+
+Valid types: ${GOOGLE_PLACE_TYPES}
+
+Rules:
+- i_day_street and i_night_street: curated streets, NOT searchable via Google — return {"noGoogleSearch": true}
+- For interests that rely on keyword search (e.g. graffiti/street art/craft workshops): return {"textSearch": "search phrase"}
+- For all others: return {"types": ["type1", "type2", ...]} — include 2-8 genuinely relevant types only
+- ONLY use types from the valid list above
+
+Return JSON only, no explanation: {"types": [...]} or {"textSearch": "..."} or {"noGoogleSearch": true}`;
+    const raw = await callAI(prompt, 512);
+    setTypeSuggesting(prev => ({ ...prev, [interest.id]: false }));
+    if (raw && raw.error) { showToast(raw.error, 'error'); return; }
+    const parsed = parseAI(raw);
+    if (!parsed) { showToast('Could not parse AI response for ' + interest.labelEn, 'error'); return; }
+    setTypeEdits(prev => ({ ...prev, [interest.id]: parsed }));
+  };
+
+  const runTypeSuggestAll = async () => {
+    applyIa();
+    setTypeSuggestAll(true);
+    for (const interest of interests) {
+      await runTypeSuggest(interest);
+    }
+    setTypeSuggestAll(false);
+    showToast('Suggestions generated for all interests', 'success');
+  };
+
+  const saveTypeConfig = async (interestId) => {
+    const edits = typeEdits[interestId];
+    if (!edits) return;
+    setTypeSaving(prev => ({ ...prev, [interestId]: true }));
+    await db.ref('settings/interestConfig/' + interestId).update(edits);
+    setInterests(prev => prev.map(i => i.id === interestId ? { ...i, ...edits } : i));
+    setTypeEdits(prev => { const n = {...prev}; delete n[interestId]; return n; });
+    setTypeSaving(prev => ({ ...prev, [interestId]: false }));
+    showToast('Saved types for ' + (interests.find(i => i.id === interestId)?.labelEn || interestId), 'success');
+  };
+
+  const saveAllTypeEdits = async () => {
+    const ids = Object.keys(typeEdits);
+    for (const id of ids) await saveTypeConfig(id);
+    showToast(`Saved ${ids.length} interest configs`, 'success');
+  };
+
+  const getTypeDesc = (interest) => {
+    if (interest.noGoogleSearch) return { label: 'No Google search (curated)', color: '#7c3aed', bg: '#ede9fe' };
+    const ts = interest.textSearch;
+    if (ts) return { label: `Text: "${ts}"`, color: '#0369a1', bg: '#e0f2fe' };
+    const types = Array.isArray(interest.types) ? interest.types : Object.values(interest.types || {});
+    if (types.length === 0) return { label: 'No types set', color: '#dc2626', bg: '#fee2e2' };
+    return { label: types.slice(0, 4).join(', ') + (types.length > 4 ? ` +${types.length - 4}` : ''), color: '#15803d', bg: '#dcfce7' };
+  };
+
+  const getEditDesc = (edit) => {
+    if (edit.noGoogleSearch) return { label: 'No Google search (curated)', color: '#7c3aed', bg: '#ede9fe' };
+    if (edit.textSearch) return { label: `Text: "${edit.textSearch}"`, color: '#0369a1', bg: '#e0f2fe' };
+    const types = Array.isArray(edit.types) ? edit.types : [];
+    return { label: types.slice(0, 4).join(', ') + (types.length > 4 ? ` +${types.length - 4}` : ''), color: '#15803d', bg: '#dcfce7' };
   };
 
   // ── Phase 1: Spot Check ─────────────────────────────────────────
@@ -2669,6 +2795,7 @@ const InterestAdvisor = ({ showToast, onBack }) => {
     { id:'spot',     label:'Spot Check',       desc:'One interest × one city' },
     { id:'sweep',    label:'City Sweep',        desc:'All interests for a city' },
     { id:'discover', label:'Discover Missing',  desc:'Find missing interests for a city' },
+    { id:'types',    label:'Type Editor',       desc:'AI-optimise Google search types' },
   ];
 
   return (
@@ -2948,6 +3075,101 @@ const InterestAdvisor = ({ showToast, onBack }) => {
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* ── PHASE 4: TYPE EDITOR ── */}
+        {mode === 'types' && (
+          <div>
+            <div style={{ display:'flex', gap:10, marginBottom:20, alignItems:'center', flexWrap:'wrap' }}>
+              <div style={{ flex:1, fontSize:13, color:'#64748b' }}>
+                AI suggests optimised Google Place types for each interest using the full Table A type list.
+                Changes are saved to <code style={{ fontSize:11 }}>settings/interestConfig</code> in Firebase.
+              </div>
+              <button onClick={runTypeSuggestAll} disabled={typeSuggestAll || !iaKey}
+                style={{ padding:'9px 18px', fontSize:12, fontWeight:700,
+                  background: (typeSuggestAll || !iaKey) ? '#a5b4fc' : '#6366f1',
+                  color:'white', border:'none', borderRadius:10,
+                  cursor: (typeSuggestAll || !iaKey) ? 'default' : 'pointer' }}>
+                {typeSuggestAll ? '⏳ Suggesting all...' : '✨ Suggest All'}
+              </button>
+              {Object.keys(typeEdits).length > 0 && (
+                <button onClick={saveAllTypeEdits}
+                  style={{ padding:'9px 18px', fontSize:12, fontWeight:700,
+                    background:'#10b981', color:'white', border:'none', borderRadius:10, cursor:'pointer' }}>
+                  💾 Save all ({Object.keys(typeEdits).length})
+                </button>
+              )}
+            </div>
+
+            <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+              {interests.map(interest => {
+                const current = getTypeDesc(interest);
+                const edit = typeEdits[interest.id];
+                const suggested = edit ? getEditDesc(edit) : null;
+                const isSuggesting = typeSuggesting[interest.id];
+                const isSaving = typeSaving[interest.id];
+                return (
+                  <div key={interest.id} style={{ background:'white', borderRadius:12,
+                    border:'1px solid ' + (edit ? '#6366f1' : '#e2e8f0'), padding:'12px 16px' }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                      <span style={{ fontSize:18, flexShrink:0 }}>
+                        {interestIcon(interest)}
+                      </span>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ fontSize:13, fontWeight:700, color:'#1e293b', marginBottom:4 }}>
+                          {interest.labelEn}
+                          <span style={{ fontSize:10, color:'#94a3b8', marginLeft:6, fontWeight:400 }}>{interest.id}</span>
+                        </div>
+                        <div style={{ display:'flex', gap:6, flexWrap:'wrap', alignItems:'center' }}>
+                          <span style={{ fontSize:11, padding:'2px 8px', borderRadius:6,
+                            background: current.bg, color: current.color, fontWeight:600 }}>
+                            {current.label}
+                          </span>
+                          {suggested && (
+                            <>
+                              <span style={{ fontSize:11, color:'#94a3b8' }}>→</span>
+                              <span style={{ fontSize:11, padding:'2px 8px', borderRadius:6,
+                                background: suggested.bg, color: suggested.color, fontWeight:600,
+                                border:'1px solid ' + suggested.color + '44' }}>
+                                {suggested.label}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <div style={{ display:'flex', gap:6, flexShrink:0 }}>
+                        <button onClick={() => runTypeSuggest(interest)}
+                          disabled={isSuggesting || typeSuggestAll}
+                          style={{ padding:'5px 12px', fontSize:12, fontWeight:600,
+                            background: (isSuggesting || typeSuggestAll) ? '#e2e8f0' : '#eef2ff',
+                            color: (isSuggesting || typeSuggestAll) ? '#94a3b8' : '#4338ca',
+                            border:'1px solid ' + ((isSuggesting || typeSuggestAll) ? '#e2e8f0' : '#c7d2fe'),
+                            borderRadius:8, cursor:(isSuggesting || typeSuggestAll)?'default':'pointer' }}>
+                          {isSuggesting ? '⏳' : '✨ Suggest'}
+                        </button>
+                        {edit && (
+                          <>
+                            <button onClick={() => saveTypeConfig(interest.id)} disabled={isSaving}
+                              style={{ padding:'5px 12px', fontSize:12, fontWeight:700,
+                                background: isSaving ? '#86efac' : '#10b981',
+                                color:'white', border:'none', borderRadius:8,
+                                cursor: isSaving ? 'default' : 'pointer' }}>
+                              {isSaving ? '...' : 'Save'}
+                            </button>
+                            <button onClick={() => setTypeEdits(prev => { const n={...prev}; delete n[interest.id]; return n; })}
+                              style={{ padding:'5px 8px', fontSize:12, background:'white',
+                                color:'#94a3b8', border:'1px solid #e2e8f0', borderRadius:8, cursor:'pointer' }}>
+                              ✕
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
 
