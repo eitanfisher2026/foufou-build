@@ -2775,13 +2775,74 @@ Return JSON only, no explanation: {"types": [...]} or {"textSearch": "..."} or {
   const createDraftInterest = async (suggestion, idx) => {
     setDiscCreating(prev => ({ ...prev, [idx]: true }));
     const id = suggestion.nameEn.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+
+    // Ask AI to suggest types using the same types list
+    const typePrompt = `You are configuring interest search for a tourist guide app using the Google Places API (New).
+
+New interest concept: "${suggestion.nameEn}"
+Context: "${suggestion.reason || ''}"
+
+Select the best Google Place API types from the list below.
+
+Valid types: ${GOOGLE_PLACE_TYPES}
+
+Rules:
+- Physical street/neighborhood walk interests: return {"noGoogleSearch": true}
+- Keyword-based categories (art, graffiti, crafts, etc.): return {"textSearch": "search phrase"}
+- All others: return {"types": ["type1", ...]} — include 2-8 relevant types
+
+Return JSON only: {"types": [...]} or {"textSearch": "..."} or {"noGoogleSearch": true}`;
+
+    const raw = await callAI(typePrompt, 256);
+    const typeParsed = (raw && !raw.error) ? parseAI(raw) : null;
+    const types = typeParsed?.types || [];
+    const textSearch = typeParsed?.textSearch || '';
+    const noGoogleSearch = typeParsed?.noGoogleSearch || false;
+    const searchMode = noGoogleSearch ? 'none' : (textSearch ? 'textSearch' : 'types');
+
     await db.ref('customInterests/' + id).set({
       id, labelEn: suggestion.nameEn, label: '', icon: '📍',
-      locked: false, searchMode: 'types', types: [],
+      locked: false, searchMode,
+      ...(types.length ? { types } : {}),
+      ...(textSearch ? { textSearch } : {}),
+      ...(noGoogleSearch ? { noGoogleSearch: true } : {}),
       aiGenerated: true, weight: 3, minStops: 1, maxStops: 10,
     });
+
+    if (typeParsed) {
+      await db.ref('settings/interestConfig/' + id).set({
+        ...(types.length ? { types } : {}),
+        ...(textSearch ? { textSearch } : {}),
+        ...(noGoogleSearch ? { noGoogleSearch: true } : {}),
+      });
+    }
+
     setDiscCreating(prev => ({ ...prev, [idx]: false }));
-    showToast(`Draft created: "${suggestion.nameEn}" — add Hebrew name and icon in FouFou`, 'success');
+    const typeNote = noGoogleSearch ? 'no Google search (curated)'
+      : textSearch ? `text: "${textSearch}"`
+      : types.length ? types.slice(0, 3).join(', ') + (types.length > 3 ? '…' : '')
+      : 'no types — check interestConfig';
+    showToast(`Draft created: "${suggestion.nameEn}" — ${typeNote}. Add Hebrew name and icon in FouFou.`, 'success');
+  };
+
+  const exportDiscover = () => {
+    const json = JSON.stringify(discResults, null, 2);
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(json).then(() => showToast('Copied to clipboard', 'success'));
+    } else {
+      const a = document.createElement('a');
+      a.href = 'data:application/json,' + encodeURIComponent(json);
+      a.download = 'discover-' + (discCity || 'interests') + '.json';
+      a.click();
+    }
+  };
+
+  const downloadDiscover = () => {
+    const json = JSON.stringify(discResults, null, 2);
+    const a = document.createElement('a');
+    a.href = 'data:application/json,' + encodeURIComponent(json);
+    a.download = 'discover-' + (discCity || 'interests') + '-' + new Date().toISOString().slice(0, 10) + '.json';
+    a.click();
   };
 
   const sortedCities = Object.entries(cities).sort((a, b) => (a[1].nameEn||'').localeCompare(b[1].nameEn||''));
@@ -3041,32 +3102,46 @@ Return JSON only, no explanation: {"types": [...]} or {"textSearch": "..."} or {
             </div>
 
             {discResults && discResults.length > 0 && (
-              <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-                {discResults.map((s, idx) => (
-                  <div key={idx} style={{ background:'white', borderRadius:12, border:'1px solid #e2e8f0', padding:'14px 18px' }}>
-                    <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12 }}>
-                      <div style={{ flex:1 }}>
-                        <div style={{ fontSize:14, fontWeight:700, color:'#1e293b', marginBottom:4 }}>{s.nameEn}</div>
-                        <div style={{ fontSize:12, color:'#64748b', marginBottom:6 }}>{s.reason}</div>
-                        {s.otherCities && s.otherCities.length > 0 && (
-                          <div style={{ fontSize:11, color:'#94a3b8' }}>
-                            Also relevant: {s.otherCities.join(', ')}
-                          </div>
-                        )}
-                        <div style={{ fontSize:10, color:'#c4b5fd', marginTop:4 }}>
-                          Draft saved without types — add Google Place types in FouFou interest settings
+              <>
+                <div style={{ display:'flex', gap:8, marginBottom:12, justifyContent:'flex-end', alignItems:'center' }}>
+                  <span style={{ fontSize:12, color:'#94a3b8', marginRight:'auto' }}>
+                    {discResults.length} suggestions
+                  </span>
+                  <button onClick={exportDiscover}
+                    style={{ padding:'6px 14px', fontSize:12, fontWeight:600, borderRadius:8, cursor:'pointer',
+                      border:'1px solid #c7d2fe', background:'#eef2ff', color:'#4338ca' }}>
+                    📋 Copy JSON
+                  </button>
+                  <button onClick={downloadDiscover}
+                    style={{ padding:'6px 14px', fontSize:12, fontWeight:600, borderRadius:8, cursor:'pointer',
+                      border:'1px solid #c7d2fe', background:'#eef2ff', color:'#4338ca' }}>
+                    ⬇ Download
+                  </button>
+                </div>
+                <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+                  {discResults.map((s, idx) => (
+                    <div key={idx} style={{ background:'white', borderRadius:12, border:'1px solid #e2e8f0', padding:'14px 18px' }}>
+                      <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12 }}>
+                        <div style={{ flex:1 }}>
+                          <div style={{ fontSize:14, fontWeight:700, color:'#1e293b', marginBottom:4 }}>{s.nameEn}</div>
+                          <div style={{ fontSize:12, color:'#64748b', marginBottom:6 }}>{s.reason}</div>
+                          {s.otherCities && s.otherCities.length > 0 && (
+                            <div style={{ fontSize:11, color:'#94a3b8' }}>
+                              Also relevant: {s.otherCities.join(', ')}
+                            </div>
+                          )}
                         </div>
+                        <button onClick={() => createDraftInterest(s, idx)} disabled={!!discCreating[idx]}
+                          style={{ flexShrink:0, padding:'6px 14px', fontSize:12, fontWeight:600,
+                            background: discCreating[idx] ? '#e2e8f0' : '#6366f1', color:'white',
+                            border:'none', borderRadius:8, cursor: discCreating[idx] ? 'default' : 'pointer' }}>
+                          {discCreating[idx] ? '⏳ Creating...' : '+ Add draft'}
+                        </button>
                       </div>
-                      <button onClick={() => createDraftInterest(s, idx)} disabled={!!discCreating[idx]}
-                        style={{ flexShrink:0, padding:'6px 14px', fontSize:12, fontWeight:600,
-                          background: discCreating[idx] ? '#e2e8f0' : '#6366f1', color:'white',
-                          border:'none', borderRadius:8, cursor: discCreating[idx] ? 'default' : 'pointer' }}>
-                        {discCreating[idx] ? 'Creating...' : '+ Add draft'}
-                      </button>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              </>
             )}
             {discResults && discResults.length === 0 && (
               <div style={{ padding:'24px', background:'white', borderRadius:12, border:'1px solid #e2e8f0' }}>
