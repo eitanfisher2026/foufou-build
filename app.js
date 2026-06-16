@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '1.0.1';
+const VERSION = '1.0.2';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -3324,123 +3324,146 @@ Return JSON only: {"types": [...]} or {"textSearch": "..."} or {"noGoogleSearch"
               {interests.map(interest => {
                 const current = getTypeDesc(interest);
                 const edit = typeEdits[interest.id];
-                const suggested = edit ? getEditDesc(edit) : null;
                 const isSuggesting = typeSuggesting[interest.id];
                 const isSaving = typeSaving[interest.id];
                 const isPickingIcon = iconPickingId === interest.id;
                 const iconSugs = iconSuggestions[interest.id] || [];
                 const isIconLoading = iconLoading[interest.id];
                 const isIconSaving = iconSaving[interest.id];
+
+                const updateEditTypes = (val) => {
+                  const types = val.split(',').map(t => t.trim()).filter(Boolean);
+                  setTypeEdits(prev => ({ ...prev, [interest.id]: { ...prev[interest.id], types } }));
+                };
+                const updateEditTextSearch = (val) => {
+                  setTypeEdits(prev => ({ ...prev, [interest.id]: { ...prev[interest.id], textSearch: val } }));
+                };
+
                 return (
                   <div key={interest.id} style={{ background:'white', borderRadius:12,
-                    border:'1px solid ' + (isPickingIcon ? '#f59e0b' : edit ? '#6366f1' : '#e2e8f0'), padding:'12px 16px' }}>
+                    border:'1px solid ' + (isPickingIcon ? '#f59e0b' : edit ? '#6366f1' : '#e2e8f0'),
+                    padding:'12px 16px' }}>
+
+                    {/* Main row */}
                     <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                      {/* Clickable icon — opens picker */}
+                      {/* Clickable icon */}
                       <button onClick={() => {
                         if (isPickingIcon) { setIconPickingId(null); }
-                        else {
-                          setIconPickingId(interest.id);
-                          if (!iconSuggestions[interest.id]) suggestIcons(interest);
-                        }
+                        else { setIconPickingId(interest.id); if (!iconSuggestions[interest.id]) suggestIcons(interest); }
                       }} title="Click to change icon"
-                        style={{ flexShrink:0, fontSize:22, background: isPickingIcon ? '#fef3c7' : '#f8fafc',
+                        style={{ flexShrink:0, background: isPickingIcon ? '#fef3c7' : '#f8fafc',
                           border:'1px solid ' + (isPickingIcon ? '#fde68a' : '#e2e8f0'),
                           borderRadius:8, width:38, height:38, display:'flex', alignItems:'center',
                           justifyContent:'center', cursor:'pointer', transition:'all 0.15s' }}>
                         {interestIcon(interest)}
                       </button>
+
+                      {/* Name + types */}
                       <div style={{ flex:1, minWidth:0 }}>
                         <div style={{ fontSize:13, fontWeight:700, color:'#1e293b', marginBottom:4 }}>
                           {interest.labelEn}
                           <span style={{ fontSize:10, color:'#94a3b8', marginLeft:6, fontWeight:400 }}>{interest.id}</span>
                         </div>
-                        <div style={{ display:'flex', gap:6, flexWrap:'wrap', alignItems:'center' }}>
-                          <span style={{ fontSize:11, padding:'2px 8px', borderRadius:6,
-                            background: current.bg, color: current.color, fontWeight:600 }}>
-                            {current.label}
-                          </span>
-                          {suggested && (
-                            <>
-                              <span style={{ fontSize:11, color:'#94a3b8' }}>→</span>
-                              <span style={{ fontSize:11, padding:'2px 8px', borderRadius:6,
-                                background: suggested.bg, color: suggested.color, fontWeight:600,
-                                border:'1px solid ' + suggested.color + '44' }}>
-                                {suggested.label}
-                              </span>
-                            </>
-                          )}
-                        </div>
+                        {!isPickingIcon && (
+                          <div style={{ display:'flex', gap:6, flexWrap:'wrap', alignItems:'center' }}>
+                            <span style={{ fontSize:11, padding:'2px 8px', borderRadius:6,
+                              background: current.bg, color: current.color, fontWeight:600 }}>
+                              {current.label}
+                            </span>
+                            {edit && (
+                              <>
+                                <span style={{ fontSize:11, color:'#94a3b8' }}>→</span>
+                                {edit.noGoogleSearch ? (
+                                  <span style={{ fontSize:11, padding:'2px 8px', borderRadius:6,
+                                    background:'#ede9fe', color:'#7c3aed', fontWeight:600 }}>
+                                    No Google search (curated)
+                                  </span>
+                                ) : edit.textSearch !== undefined ? (
+                                  <input value={edit.textSearch}
+                                    onChange={e => updateEditTextSearch(e.target.value)}
+                                    placeholder="text search query"
+                                    style={{ fontSize:11, padding:'2px 8px', borderRadius:6, border:'1.5px solid #6366f1',
+                                      color:'#0369a1', background:'#e0f2fe', outline:'none', minWidth:140 }} />
+                                ) : (
+                                  <input value={(edit.types||[]).join(', ')}
+                                    onChange={e => updateEditTypes(e.target.value)}
+                                    placeholder="type1, type2, ..."
+                                    style={{ fontSize:11, padding:'2px 8px', borderRadius:6, border:'1.5px solid #6366f1',
+                                      color:'#15803d', background:'#f0fdf4', outline:'none', minWidth:220 }} />
+                                )}
+                              </>
+                            )}
+                          </div>
+                        )}
+                        {/* Icon suggestions inline */}
+                        {isPickingIcon && (
+                          <div style={{ display:'flex', gap:5, flexWrap:'wrap', alignItems:'center' }}>
+                            {isIconLoading ? (
+                              <span style={{ fontSize:12, color:'#94a3b8' }}>⏳ Finding icons...</span>
+                            ) : iconSugs.map((s, si) => (
+                              <button key={si} onClick={() => pickIcon(interest, s)}
+                                disabled={isIconSaving} title={s.reason}
+                                style={{ width:36, height:36, borderRadius:8, border:'1.5px solid #e2e8f0',
+                                  background:'white', cursor: isIconSaving ? 'default' : 'pointer',
+                                  display:'flex', alignItems:'center', justifyContent:'center',
+                                  transition:'border-color 0.15s, transform 0.1s' }}
+                                onMouseEnter={e => { e.currentTarget.style.borderColor='#f59e0b'; e.currentTarget.style.transform='scale(1.15)'; }}
+                                onMouseLeave={e => { e.currentTarget.style.borderColor='#e2e8f0'; e.currentTarget.style.transform='scale(1)'; }}>
+                                <img src={`${_tw}${s.hex}.png`} alt={s.emoji} style={{ width:22, height:22, objectFit:'contain' }}
+                                  onError={e => { e.currentTarget.parentNode.style.display='none'; }} />
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
-                      <div style={{ display:'flex', gap:6, flexShrink:0 }}>
-                        <button onClick={() => runTypeSuggest(interest)}
-                          disabled={isSuggesting || typeSuggestAll}
-                          style={{ padding:'5px 12px', fontSize:12, fontWeight:600,
-                            background: (isSuggesting || typeSuggestAll) ? '#e2e8f0' : '#eef2ff',
-                            color: (isSuggesting || typeSuggestAll) ? '#94a3b8' : '#4338ca',
-                            border:'1px solid ' + ((isSuggesting || typeSuggestAll) ? '#e2e8f0' : '#c7d2fe'),
-                            borderRadius:8, cursor:(isSuggesting || typeSuggestAll)?'default':'pointer' }}>
-                          {isSuggesting ? '⏳' : '✨ Suggest types'}
-                        </button>
-                        {edit && (
+
+                      {/* Right buttons */}
+                      <div style={{ display:'flex', gap:6, flexShrink:0, alignItems:'center' }}>
+                        {isPickingIcon ? (
                           <>
-                            <button onClick={() => saveTypeConfig(interest.id)} disabled={isSaving}
-                              style={{ padding:'5px 12px', fontSize:12, fontWeight:700,
-                                background: isSaving ? '#86efac' : '#10b981',
-                                color:'white', border:'none', borderRadius:8,
-                                cursor: isSaving ? 'default' : 'pointer' }}>
-                              {isSaving ? '...' : 'Save'}
+                            <button onClick={() => suggestIcons(interest, true)} disabled={isIconLoading}
+                              style={{ padding:'5px 10px', fontSize:12, fontWeight:600, borderRadius:8,
+                                border:'1px solid #fde68a', background:'#fefce8', color:'#92400e',
+                                cursor: isIconLoading ? 'default' : 'pointer' }}>
+                              More
                             </button>
-                            <button onClick={() => setTypeEdits(prev => { const n={...prev}; delete n[interest.id]; return n; })}
+                            <button onClick={() => { setIconPickingId(null); setIconSuggestions(prev => { const n={...prev}; delete n[interest.id]; return n; }); }}
                               style={{ padding:'5px 8px', fontSize:12, background:'white',
                                 color:'#94a3b8', border:'1px solid #e2e8f0', borderRadius:8, cursor:'pointer' }}>
                               ✕
                             </button>
                           </>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Icon picker panel */}
-                    {isPickingIcon && (
-                      <div style={{ marginTop:12, paddingTop:12, borderTop:'1px solid #fde68a' }}>
-                        {isIconLoading ? (
-                          <div style={{ fontSize:13, color:'#94a3b8', padding:'8px 0' }}>⏳ Finding icons...</div>
                         ) : (
                           <>
-                            <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:10 }}>
-                              {iconSugs.map((s, si) => (
-                                <button key={si} onClick={() => pickIcon(interest, s)}
-                                  disabled={isIconSaving}
-                                  title={s.reason}
-                                  style={{ width:48, height:48, borderRadius:10, border:'1.5px solid #e2e8f0',
-                                    background:'white', cursor: isIconSaving ? 'default' : 'pointer',
-                                    display:'flex', alignItems:'center', justifyContent:'center',
-                                    transition:'border-color 0.15s, transform 0.1s' }}
-                                  onMouseEnter={e => { e.currentTarget.style.borderColor='#f59e0b'; e.currentTarget.style.transform='scale(1.12)'; }}
-                                  onMouseLeave={e => { e.currentTarget.style.borderColor='#e2e8f0'; e.currentTarget.style.transform='scale(1)'; }}>
-                                  <img src={`${_tw}${s.hex}.png`} alt={s.emoji}
-                                    style={{ width:28, height:28, objectFit:'contain' }}
-                                    onError={e => { e.currentTarget.parentNode.style.display='none'; }} />
+                            <button onClick={() => runTypeSuggest(interest)}
+                              disabled={isSuggesting || typeSuggestAll}
+                              style={{ padding:'5px 12px', fontSize:12, fontWeight:600,
+                                background: (isSuggesting || typeSuggestAll) ? '#e2e8f0' : '#eef2ff',
+                                color: (isSuggesting || typeSuggestAll) ? '#94a3b8' : '#4338ca',
+                                border:'1px solid ' + ((isSuggesting || typeSuggestAll) ? '#e2e8f0' : '#c7d2fe'),
+                                borderRadius:8, cursor:(isSuggesting || typeSuggestAll)?'default':'pointer' }}>
+                              {isSuggesting ? '⏳' : '✨ Suggest types'}
+                            </button>
+                            {edit && (
+                              <>
+                                <button onClick={() => saveTypeConfig(interest.id)} disabled={isSaving}
+                                  style={{ padding:'5px 12px', fontSize:12, fontWeight:700,
+                                    background: isSaving ? '#86efac' : '#10b981',
+                                    color:'white', border:'none', borderRadius:8,
+                                    cursor: isSaving ? 'default' : 'pointer' }}>
+                                  {isSaving ? '...' : 'Save'}
                                 </button>
-                              ))}
-                            </div>
-                            <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-                              <button onClick={() => suggestIcons(interest, true)} disabled={isIconLoading}
-                                style={{ padding:'5px 14px', fontSize:12, fontWeight:600, borderRadius:8,
-                                  border:'1px solid #fde68a', background:'#fefce8', color:'#92400e', cursor:'pointer' }}>
-                                More options
-                              </button>
-                              <button onClick={() => { setIconPickingId(null); setIconSuggestions(prev => { const n={...prev}; delete n[interest.id]; return n; }); }}
-                                style={{ padding:'5px 12px', fontSize:12, borderRadius:8,
-                                  border:'1px solid #e2e8f0', background:'white', color:'#94a3b8', cursor:'pointer' }}>
-                                Cancel
-                              </button>
-                              <span style={{ fontSize:11, color:'#94a3b8' }}>Click an icon to apply it</span>
-                            </div>
+                                <button onClick={() => setTypeEdits(prev => { const n={...prev}; delete n[interest.id]; return n; })}
+                                  style={{ padding:'5px 8px', fontSize:12, background:'white',
+                                    color:'#94a3b8', border:'1px solid #e2e8f0', borderRadius:8, cursor:'pointer' }}>
+                                  ✕
+                                </button>
+                              </>
+                            )}
                           </>
                         )}
                       </div>
-                    )}
+                    </div>
                   </div>
                 );
               })}
