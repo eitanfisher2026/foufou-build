@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '0.2.87';
+const VERSION = '1.0.0';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -2712,26 +2712,61 @@ Return JSON only, no explanation: {"types": [...]} or {"textSearch": "..."} or {
     showToast(`Saved ${ids.length} interest configs`, 'success');
   };
 
-  const [iconMigrating, setIconMigrating] = useState(false);
-  const migrateIconsToFirebase = async () => {
-    if (!window.confirm('This will write the canonical Twemoji URLs into the icon field of all matching interests in Firebase, replacing old base64 or emoji values. Continue?')) return;
-    setIconMigrating(true);
-    const snap = await db.ref('customInterests').once('value');
-    const raw = snap.val() || {};
+  // ── Icon Picker ────────────────────────────────────────────────
+  const [iconPickingId, setIconPickingId]   = useState(null);
+  const [iconSuggestions, setIconSuggestions] = useState({}); // {id: [{emoji, hex, reason}]}
+  const [iconLoading, setIconLoading]       = useState({});
+  const [iconSaving, setIconSaving]         = useState({});
+
+  const emojiToHex = (emoji) => {
+    const cp = [...emoji][0]?.codePointAt(0);
+    return cp ? cp.toString(16) : null;
+  };
+
+  const suggestIcons = async (interest, more = false) => {
+    applyIa();
+    setIconLoading(prev => ({ ...prev, [interest.id]: true }));
+    const existing = more ? (iconSuggestions[interest.id] || []).map(s => s.emoji).join(' ') : '';
+    const prompt = `Suggest 8 emoji icons for the tourist app interest: "${interest.labelEn}"
+
+${existing ? `Already shown: ${existing} — suggest different ones.` : ''}
+
+Rules:
+- Pick emoji that clearly represent this category visually
+- Use simple single-codepoint emoji only (no flags, skin tones, or ZWJ sequences)
+- The hex field must be the standard Unicode codepoint in lowercase hex (e.g. 🎨 → 1f3a8)
+- Vary suggestions to cover different angles of the concept
+
+Return JSON array only, no explanation:
+[{"emoji": "🎨", "hex": "1f3a8", "reason": "art and creativity"}, ...]`;
+    const raw = await callAI(prompt, 512);
+    setIconLoading(prev => ({ ...prev, [interest.id]: false }));
+    if (raw && raw.error) { showToast(raw.error, 'error'); return; }
+    const parsed = parseAIArray(raw);
+    if (!parsed) { showToast('Could not parse icon suggestions', 'error'); return; }
+    const validated = parsed.filter(s => s.emoji && s.hex);
+    setIconSuggestions(prev => ({
+      ...prev,
+      [interest.id]: more
+        ? [...(prev[interest.id] || []), ...validated]
+        : validated,
+    }));
+  };
+
+  const pickIcon = async (interest, suggestion) => {
+    setIconSaving(prev => ({ ...prev, [interest.id]: true }));
+    const url = `${_tw}${suggestion.hex}.png`;
+    const snap = await db.ref('customInterests').orderByChild('id').equalTo(interest.id).once('value');
     const updates = {};
-    let count = 0;
-    Object.entries(raw).forEach(([key, interest]) => {
-      const url = INTEREST_ICON_URLS[interest.id];
-      if (url) {
-        updates['customInterests/' + key + '/icon'] = url;
-        count++;
-      }
-    });
-    if (count === 0) { showToast('No matching interests found', 'error'); setIconMigrating(false); return; }
-    await db.ref().update(updates);
-    setIconMigrating(false);
-    showToast(`✅ Migrated icons for ${count} interests to Firebase. You can now remove interestIconPaths from FouFou-dev.`, 'success');
-    setInterests(prev => prev.map(i => INTEREST_ICON_URLS[i.id] ? { ...i, icon: INTEREST_ICON_URLS[i.id] } : i));
+    snap.forEach(child => { updates['customInterests/' + child.key + '/icon'] = url; });
+    if (Object.keys(updates).length > 0) {
+      await db.ref().update(updates);
+      setInterests(prev => prev.map(i => i.id === interest.id ? { ...i, icon: url } : i));
+      showToast(`Icon updated for ${interest.labelEn}`, 'success');
+    }
+    setIconSaving(prev => ({ ...prev, [interest.id]: false }));
+    setIconPickingId(null);
+    setIconSuggestions(prev => { const n = {...prev}; delete n[interest.id]; return n; });
   };
 
   const getTypeDesc = (interest) => {
@@ -3241,19 +3276,6 @@ Return JSON only: {"types": [...]} or {"textSearch": "..."} or {"noGoogleSearch"
                 </button>
               )}
             </div>
-            <div style={{ background:'#fef3c7', border:'1px solid #fde68a', borderRadius:10, padding:'10px 14px', marginBottom:20,
-              display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
-              <div style={{ fontSize:12, color:'#92400e' }}>
-                <strong>One-time migration:</strong> Write canonical Twemoji URLs into Firebase <code style={{ fontSize:11 }}>customInterests[*].icon</code> — making Firebase the single source of truth for icons.
-              </div>
-              <button onClick={migrateIconsToFirebase} disabled={iconMigrating}
-                style={{ flexShrink:0, padding:'7px 16px', fontSize:12, fontWeight:700,
-                  background: iconMigrating ? '#fde68a' : '#d97706',
-                  color:'white', border:'none', borderRadius:8,
-                  cursor: iconMigrating ? 'default' : 'pointer', whiteSpace:'nowrap' }}>
-                {iconMigrating ? '⏳ Migrating...' : '🔁 Migrate Icons → Firebase'}
-              </button>
-            </div>
 
             <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
               {interests.map(interest => {
@@ -3262,13 +3284,28 @@ Return JSON only: {"types": [...]} or {"textSearch": "..."} or {"noGoogleSearch"
                 const suggested = edit ? getEditDesc(edit) : null;
                 const isSuggesting = typeSuggesting[interest.id];
                 const isSaving = typeSaving[interest.id];
+                const isPickingIcon = iconPickingId === interest.id;
+                const iconSugs = iconSuggestions[interest.id] || [];
+                const isIconLoading = iconLoading[interest.id];
+                const isIconSaving = iconSaving[interest.id];
                 return (
                   <div key={interest.id} style={{ background:'white', borderRadius:12,
-                    border:'1px solid ' + (edit ? '#6366f1' : '#e2e8f0'), padding:'12px 16px' }}>
+                    border:'1px solid ' + (isPickingIcon ? '#f59e0b' : edit ? '#6366f1' : '#e2e8f0'), padding:'12px 16px' }}>
                     <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                      <span style={{ fontSize:18, flexShrink:0 }}>
+                      {/* Clickable icon — opens picker */}
+                      <button onClick={() => {
+                        if (isPickingIcon) { setIconPickingId(null); }
+                        else {
+                          setIconPickingId(interest.id);
+                          if (!iconSuggestions[interest.id]) suggestIcons(interest);
+                        }
+                      }} title="Click to change icon"
+                        style={{ flexShrink:0, fontSize:22, background: isPickingIcon ? '#fef3c7' : '#f8fafc',
+                          border:'1px solid ' + (isPickingIcon ? '#fde68a' : '#e2e8f0'),
+                          borderRadius:8, width:38, height:38, display:'flex', alignItems:'center',
+                          justifyContent:'center', cursor:'pointer', transition:'all 0.15s' }}>
                         {interestIcon(interest)}
-                      </span>
+                      </button>
                       <div style={{ flex:1, minWidth:0 }}>
                         <div style={{ fontSize:13, fontWeight:700, color:'#1e293b', marginBottom:4 }}>
                           {interest.labelEn}
@@ -3299,7 +3336,7 @@ Return JSON only: {"types": [...]} or {"textSearch": "..."} or {"noGoogleSearch"
                             color: (isSuggesting || typeSuggestAll) ? '#94a3b8' : '#4338ca',
                             border:'1px solid ' + ((isSuggesting || typeSuggestAll) ? '#e2e8f0' : '#c7d2fe'),
                             borderRadius:8, cursor:(isSuggesting || typeSuggestAll)?'default':'pointer' }}>
-                          {isSuggesting ? '⏳' : '✨ Suggest'}
+                          {isSuggesting ? '⏳' : '✨ Suggest types'}
                         </button>
                         {edit && (
                           <>
@@ -3319,6 +3356,48 @@ Return JSON only: {"types": [...]} or {"textSearch": "..."} or {"noGoogleSearch"
                         )}
                       </div>
                     </div>
+
+                    {/* Icon picker panel */}
+                    {isPickingIcon && (
+                      <div style={{ marginTop:12, paddingTop:12, borderTop:'1px solid #fde68a' }}>
+                        {isIconLoading ? (
+                          <div style={{ fontSize:13, color:'#94a3b8', padding:'8px 0' }}>⏳ Finding icons...</div>
+                        ) : (
+                          <>
+                            <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:10 }}>
+                              {iconSugs.map((s, si) => (
+                                <button key={si} onClick={() => pickIcon(interest, s)}
+                                  disabled={isIconSaving}
+                                  title={s.reason}
+                                  style={{ width:48, height:48, borderRadius:10, border:'1.5px solid #e2e8f0',
+                                    background:'white', cursor: isIconSaving ? 'default' : 'pointer',
+                                    display:'flex', alignItems:'center', justifyContent:'center',
+                                    transition:'border-color 0.15s, transform 0.1s' }}
+                                  onMouseEnter={e => { e.currentTarget.style.borderColor='#f59e0b'; e.currentTarget.style.transform='scale(1.12)'; }}
+                                  onMouseLeave={e => { e.currentTarget.style.borderColor='#e2e8f0'; e.currentTarget.style.transform='scale(1)'; }}>
+                                  <img src={`${_tw}${s.hex}.png`} alt={s.emoji}
+                                    style={{ width:28, height:28, objectFit:'contain' }}
+                                    onError={e => { e.currentTarget.parentNode.style.display='none'; }} />
+                                </button>
+                              ))}
+                            </div>
+                            <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                              <button onClick={() => suggestIcons(interest, true)} disabled={isIconLoading}
+                                style={{ padding:'5px 14px', fontSize:12, fontWeight:600, borderRadius:8,
+                                  border:'1px solid #fde68a', background:'#fefce8', color:'#92400e', cursor:'pointer' }}>
+                                More options
+                              </button>
+                              <button onClick={() => { setIconPickingId(null); setIconSuggestions(prev => { const n={...prev}; delete n[interest.id]; return n; }); }}
+                                style={{ padding:'5px 12px', fontSize:12, borderRadius:8,
+                                  border:'1px solid #e2e8f0', background:'white', color:'#94a3b8', cursor:'pointer' }}>
+                                Cancel
+                              </button>
+                              <span style={{ fontSize:11, color:'#94a3b8' }}>Click an icon to apply it</span>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}
