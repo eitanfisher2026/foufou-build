@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '1.0.3';
+const VERSION = '1.0.4';
 
 // AI provider configuration
 const AI_PROVIDERS = {

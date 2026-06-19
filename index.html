@@ -26,8 +26,11 @@
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
 
-  <!-- Babel standalone — JSX in browser, fine for an admin tool -->
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Babel standalone — JSX in browser, fine for an admin tool.
+       Pinned to major v7 — unpinned "latest" jumped to v8, which defaults
+       the React JSX transform to "automatic" runtime (emits an ES module
+       `import` statement that breaks when injected as a classic script). -->
+  <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
 
   <!-- Firebase 9.22.0 compat (same version as foufou-dev) -->
   <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
