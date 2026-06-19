@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '1.0.4';
+const VERSION = '1.0.5';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -3902,11 +3902,12 @@ const CityList = ({ onAddCity, onEditCity, showToast }) => {
       .catch(err => showToast && showToast('Publish failed: ' + err.message, 'error'));
   };
 
-  // foufou-build can't touch FouFou's own localStorage (different origin) — open
-  // a URL there instead; FouFou-dev/prod clears its own cache on seeing this param.
+  // foufou-build, FouFou-dev, and FouFou (prod) are all eitanfisher2026.github.io/<repo>/ —
+  // same scheme+host+port means same origin, so they already share localStorage directly.
   const refreshOwnCache = (e, city) => {
     e.stopPropagation();
-    window.open('https://eitanfisher2026.github.io/FouFou/?clearCityCache=' + city.id, '_blank');
+    localStorage.removeItem('foufou_locations_cache_' + city.id);
+    showToast && showToast('Cache cleared for ' + city.id, 'success');
   };
 
   const sorted = Object.entries(cities).sort((a,b) => (a[1].nameEn||'').localeCompare(b[1].nameEn||''));
