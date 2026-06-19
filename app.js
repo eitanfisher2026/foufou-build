@@ -15,9 +15,10 @@ firebase.initializeApp({
 });
 const db   = firebase.database();
 const auth = firebase.auth();
+const storage = firebase.storage();
 
 // Constants
-const VERSION = '1.0.5';
+const VERSION = '1.0.6';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -3804,6 +3805,162 @@ const TipsGenerator = ({ showToast, onBack }) => {
   );
 };
 
+// ─── Image Migrator ───────────────────────────────────────────────────────────
+// Finds locations whose uploadedImage is embedded base64 text (instead of a
+// Firebase Storage link) and migrates them. This is what made some cities'
+// locations too large for users' browsers to cache (Bangkok hit 17MB).
+const ImageMigrator = ({ showToast, onBack }) => {
+  const [cities, setCities]       = useState({});
+  const [loadingCities, setLoadingCities] = useState(true);
+  const [selectedKey, setSelectedKey]     = useState('');
+  const [scanning, setScanning]   = useState(false);
+  const [scanResult, setScanResult] = useState(null); // { count, totalKB, items }
+  const [migrating, setMigrating] = useState(false);
+  const [migrateProgress, setMigrateProgress] = useState(null); // { done, total }
+  const [migrateResult, setMigrateResult] = useState(null); // { migrated, failed, savedKB }
+
+  useEffect(() => {
+    db.ref('settings/cityRegistry').once('value').then(snap => {
+      setCities(snap.val() || {});
+      setLoadingCities(false);
+    });
+  }, []);
+
+  const sortedCities = Object.entries(cities).sort((a,b) => (a[1].nameEn||'').localeCompare(b[1].nameEn||''));
+  const selectedCity = selectedKey ? cities[selectedKey] : null;
+
+  const runScan = async () => {
+    if (!selectedCity) return;
+    setScanning(true);
+    setScanResult(null);
+    setMigrateResult(null);
+    try {
+      const snap = await db.ref(`cities/${selectedCity.id}/locations`).once('value');
+      const data = snap.val() || {};
+      const items = [];
+      let totalKB = 0;
+      Object.entries(data).forEach(([id, loc]) => {
+        if (loc && typeof loc.uploadedImage === 'string' && loc.uploadedImage.startsWith('data:')) {
+          const sizeKB = Math.round(loc.uploadedImage.length / 1024);
+          totalKB += sizeKB;
+          items.push({ id, name: loc.name || '(no name)', sizeKB });
+        }
+      });
+      items.sort((a, b) => b.sizeKB - a.sizeKB);
+      setScanResult({ count: items.length, totalKB, items });
+    } catch (err) {
+      showToast('Scan failed: ' + err.message, 'error');
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const runMigrate = async () => {
+    if (!scanResult || scanResult.count === 0) return;
+    setMigrating(true);
+    setMigrateProgress({ done: 0, total: scanResult.count });
+    let migrated = 0, failed = 0, savedKB = 0;
+    for (const item of scanResult.items) {
+      try {
+        const fieldRef = db.ref(`cities/${selectedCity.id}/locations/${item.id}/uploadedImage`);
+        const snap = await fieldRef.once('value');
+        const dataUrl = snap.val();
+        if (!dataUrl || !dataUrl.startsWith('data:')) {
+          migrated++;
+          setMigrateProgress(p => ({...p, done: p.done + 1}));
+          continue;
+        }
+        const beforeKB = Math.round(dataUrl.length / 1024);
+        const response = await fetch(dataUrl);
+        const blob = await response.blob();
+        const path = `cities/${selectedCity.id}/images/${item.id}_${Date.now()}.jpg`;
+        const storageRef = storage.ref().child(path);
+        await storageRef.put(blob, { contentType: 'image/jpeg' });
+        const url = await storageRef.getDownloadURL();
+        await fieldRef.set(url);
+        savedKB += beforeKB - Math.round(url.length / 1024);
+        migrated++;
+      } catch (err) {
+        console.error('[MIGRATE] Failed for', item.id, err);
+        failed++;
+      }
+      setMigrateProgress(p => ({...p, done: p.done + 1}));
+    }
+    setMigrateResult({ migrated, failed, savedKB });
+    setMigrating(false);
+    showToast(`Migrated ${migrated}, failed ${failed}`, failed > 0 ? 'warning' : 'success');
+  };
+
+  return (
+    <div style={{ minHeight:'100vh', background:'#f8fafc' }}>
+      <div style={{ background:'white', borderBottom:'1px solid #e2e8f0', padding:'14px 24px',
+        display:'flex', alignItems:'center', gap:12, boxShadow:'0 1px 4px rgba(0,0,0,0.06)' }}>
+        <button onClick={onBack} style={{ fontSize:13, color:'#6366f1', background:'none', border:'none', cursor:'pointer', fontWeight:600 }}>← Dashboard</button>
+        <div style={{ width:1, height:20, background:'#e2e8f0' }} />
+        <span style={{ fontSize:22 }}>🖼️</span>
+        <div style={{ fontWeight:'bold', color:'#1e293b', fontSize:16 }}>Image Migrator</div>
+      </div>
+      <div style={{ maxWidth:760, margin:'0 auto', padding:'32px 24px' }}>
+        <p style={{ fontSize:13, color:'#64748b', marginBottom:20, lineHeight:1.6 }}>
+          Finds locations with images embedded as base64 text directly in the database, instead of
+          a short Firebase Storage link. This is what made Bangkok's data too large (17MB) for users'
+          browsers to cache. Scan first (read-only) before migrating.
+        </p>
+
+        <div style={{ marginBottom:20 }}>
+          <label style={{ fontSize:13, fontWeight:700, color:'#334155', display:'block', marginBottom:8 }}>Select a city</label>
+          {loadingCities ? <div style={{ color:'#94a3b8', fontSize:13 }}>Loading...</div> : (
+            <select value={selectedKey} onChange={e => { setSelectedKey(e.target.value); setScanResult(null); setMigrateResult(null); }}
+              style={{ padding:'10px 14px', border:'2px solid #6366f1', borderRadius:10, fontSize:14, color:'#1e293b', background:'white', cursor:'pointer', outline:'none', minWidth:240 }}>
+              <option value="">— pick a city —</option>
+              {sortedCities.map(([key, city]) => <option key={key} value={key}>{city.nameEn || city.name}</option>)}
+            </select>
+          )}
+        </div>
+
+        <button onClick={runScan} disabled={!selectedCity || scanning}
+          style={{ padding:'10px 22px', background:(!selectedCity||scanning)?'#a5b4fc':'#6366f1',
+            color:'white', border:'none', borderRadius:10, fontSize:14, fontWeight:'bold',
+            cursor:(!selectedCity||scanning)?'default':'pointer', marginBottom:20 }}>
+          {scanning ? 'Scanning...' : '🔍 Scan for embedded images'}
+        </button>
+
+        {scanResult && (
+          <div style={{ background:'white', borderRadius:12, border:'1px solid #e2e8f0', padding:20, marginBottom:20 }}>
+            <div style={{ fontSize:14, fontWeight:'bold', color:'#1e293b', marginBottom:8 }}>
+              Found {scanResult.count} location(s) with embedded images — {(scanResult.totalKB/1024).toFixed(1)}MB total
+            </div>
+            {scanResult.count > 0 && (
+              <>
+                <div style={{ maxHeight:240, overflowY:'auto', marginBottom:16 }}>
+                  {scanResult.items.map(item => (
+                    <div key={item.id} style={{ display:'flex', justifyContent:'space-between', padding:'4px 0', fontSize:12, color:'#64748b', borderBottom:'1px solid #f1f5f9' }}>
+                      <span>{item.name}</span>
+                      <span>{item.sizeKB}KB</span>
+                    </div>
+                  ))}
+                </div>
+                <button onClick={runMigrate} disabled={migrating}
+                  style={{ padding:'10px 22px', background: migrating ? '#fca5a5' : '#ef4444',
+                    color:'white', border:'none', borderRadius:10, fontSize:14, fontWeight:'bold',
+                    cursor: migrating ? 'default' : 'pointer' }}>
+                  {migrating ? `Migrating... ${migrateProgress?.done||0}/${migrateProgress?.total||0}` : `🚀 Migrate ${scanResult.count} image(s) to Storage`}
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {migrateResult && (
+          <div style={{ background:'#f0fdf4', border:'1px solid #86efac', borderRadius:12, padding:16, fontSize:13, color:'#166534' }}>
+            ✅ Migrated {migrateResult.migrated}, failed {migrateResult.failed}. Saved ~{(migrateResult.savedKB/1024).toFixed(1)}MB from the database.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 const SECTIONS = [
   { id:'cities',    icon:'🏙️', title:'City Builder',        color:'#10b981', ready:true,
@@ -3814,6 +3971,8 @@ const SECTIONS = [
     desc:'Generate practical tourist tips for each city, like the Bangkok tips in FouFou.' },
   { id:'interests',  icon:'🎯', title:'Interest Advisor',      color:'#8b5cf6', ready:true,
     desc:'AI checks interest relevance per city, sweeps all interests, discovers missing ones.' },
+  { id:'images',    icon:'🖼️', title:'Image Migrator',       color:'#ef4444', ready:true,
+    desc:'Find locations with embedded base64 images and migrate them to Firebase Storage links.' },
   { id:'trails',    icon:'🗺️', title:'Trail Generator',      color:'#ec4899', ready:false,
     desc:'Generate 2 recommended saved trails per area per city.' },
 ];
@@ -4151,6 +4310,10 @@ const FouFouBuild = () => {
 
       {view === 'tips' && (
         <TipsGenerator showToast={showToast} onBack={() => setView('dashboard')} />
+      )}
+
+      {view === 'images' && (
+        <ImageMigrator showToast={showToast} onBack={() => setView('dashboard')} />
       )}
 
       {view === 'add-city' && (
