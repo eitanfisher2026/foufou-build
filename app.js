@@ -17,7 +17,7 @@ const db   = firebase.database();
 const auth = firebase.auth();
 
 // Constants
-const VERSION = '1.0.2';
+const VERSION = '1.0.3';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -3863,7 +3863,7 @@ const Dashboard = ({ onNavigate, user, onSignOut }) => (
 );
 
 // ─── City List ────────────────────────────────────────────────────────────────
-const CityList = ({ onAddCity, onEditCity }) => {
+const CityList = ({ onAddCity, onEditCity, showToast }) => {
   const [cities, setCities]   = useState({});
   const [configs, setConfigs] = useState({});
   const [loading, setLoading] = useState(true);
@@ -3892,6 +3892,21 @@ const CityList = ({ onAddCity, onEditCity }) => {
     const next = !city.active;
     setCities(prev => ({ ...prev, [key]: { ...prev[key], active: next } }));
     db.ref('settings/cityRegistry/' + key + '/active').set(next).catch(() => reload());
+  };
+
+  // Push current Firebase data to all users — bumps the version users check on city load
+  const publishCity = (e, city) => {
+    e.stopPropagation();
+    db.ref('cityDataVersions/' + city.id).set(Date.now())
+      .then(() => showToast && showToast('Published — users get fresh data on next load', 'success'))
+      .catch(err => showToast && showToast('Publish failed: ' + err.message, 'error'));
+  };
+
+  // foufou-build can't touch FouFou's own localStorage (different origin) — open
+  // a URL there instead; FouFou-dev/prod clears its own cache on seeing this param.
+  const refreshOwnCache = (e, city) => {
+    e.stopPropagation();
+    window.open('https://eitanfisher2026.github.io/FouFou/?clearCityCache=' + city.id, '_blank');
   };
 
   const sorted = Object.entries(cities).sort((a,b) => (a[1].nameEn||'').localeCompare(b[1].nameEn||''));
@@ -3935,6 +3950,18 @@ const CityList = ({ onAddCity, onEditCity }) => {
                   background: city.active ? '#dcfce7' : '#f1f5f9',
                   color: city.active ? '#16a34a' : '#64748b' }}>
                 {city.active ? 'Active' : 'Inactive'}
+              </button>
+              <button onClick={e => publishCity(e, city)}
+                title="Push current data to all users (bumps version they check on load)"
+                style={{ fontSize:11, padding:'3px 10px', borderRadius:20, fontWeight:600, flexShrink:0,
+                  border:'none', cursor:'pointer', background:'#e0e7ff', color:'#4338ca' }}>
+                📤 Publish
+              </button>
+              <button onClick={e => refreshOwnCache(e, city)}
+                title="Clear your own cached copy of this city on FouFou"
+                style={{ fontSize:11, padding:'3px 10px', borderRadius:20, fontWeight:600, flexShrink:0,
+                  border:'none', cursor:'pointer', background:'#f1f5f9', color:'#64748b' }}>
+                🔄 My cache
               </button>
               <span style={{ fontSize:12, color:'#6366f1', fontWeight:600, flexShrink:0 }}>Edit →</span>
             </div>
@@ -4108,6 +4135,7 @@ const FouFouBuild = () => {
           <CityList
             onAddCity={() => setView('add-city')}
             onEditCity={(key, entry) => { setEditingCity({ key, entry }); setView('edit-city'); }}
+            showToast={showToast}
           />
         </>
       )}
