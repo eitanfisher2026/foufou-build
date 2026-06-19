@@ -18,7 +18,7 @@ const auth = firebase.auth();
 const storage = firebase.storage();
 
 // Constants
-const VERSION = '1.0.6';
+const VERSION = '1.0.7';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -4026,6 +4026,8 @@ const CityList = ({ onAddCity, onEditCity, showToast }) => {
   const [cities, setCities]   = useState({});
   const [configs, setConfigs] = useState({});
   const [loading, setLoading] = useState(true);
+  const [statsModal, setStatsModal] = useState(null); // { city, totalLocations, totalKB, embeddedCount, embeddedKB, storageCount, noImageCount }
+  const [statsLoading, setStatsLoading] = useState(null); // cityId currently loading, or null
 
   const reload = () => {
     setLoading(true);
@@ -4068,6 +4070,40 @@ const CityList = ({ onAddCity, onEditCity, showToast }) => {
     localStorage.removeItem('foufou_locations_cache_' + city.id);
     showToast && showToast('Cache cleared for ' + city.id, 'success');
   };
+
+  // Database size + image breakdown — same size measurement that explains
+  // whether a city's data is small enough for users' browsers to cache.
+  const showStats = async (e, city) => {
+    e.stopPropagation();
+    setStatsLoading(city.id);
+    try {
+      const snap = await db.ref(`cities/${city.id}/locations`).once('value');
+      const data = snap.val() || {};
+      const locs = Object.values(data);
+      const totalBytes = JSON.stringify(data).length;
+      let embeddedCount = 0, embeddedBytes = 0, storageCount = 0, noImageCount = 0;
+      locs.forEach(loc => {
+        const img = loc && loc.uploadedImage;
+        if (typeof img === 'string' && img.startsWith('data:')) { embeddedCount++; embeddedBytes += img.length; }
+        else if (typeof img === 'string' && img.startsWith('http')) { storageCount++; }
+        else { noImageCount++; }
+      });
+      setStatsModal({
+        city,
+        totalLocations: locs.length,
+        totalKB: Math.round(totalBytes / 1024),
+        embeddedCount,
+        embeddedKB: Math.round(embeddedBytes / 1024),
+        storageCount,
+        noImageCount,
+      });
+    } catch (err) {
+      showToast && showToast('Stats failed: ' + err.message, 'error');
+    } finally {
+      setStatsLoading(null);
+    }
+  };
+  const fmtSize = (kb) => kb >= 1024 ? (kb / 1024).toFixed(1) + ' MB' : kb + ' KB';
 
   const sorted = Object.entries(cities).sort((a,b) => (a[1].nameEn||'').localeCompare(b[1].nameEn||''));
 
@@ -4123,9 +4159,63 @@ const CityList = ({ onAddCity, onEditCity, showToast }) => {
                   border:'none', cursor:'pointer', background:'#f1f5f9', color:'#64748b' }}>
                 🔄 My cache
               </button>
+              <button onClick={e => showStats(e, city)} disabled={statsLoading === city.id}
+                title="Show database size and image breakdown for this city"
+                style={{ fontSize:11, padding:'3px 10px', borderRadius:20, fontWeight:600, flexShrink:0,
+                  border:'none', cursor: statsLoading === city.id ? 'default' : 'pointer', background:'#fef3c7', color:'#92400e' }}>
+                {statsLoading === city.id ? '...' : '📊 Stats'}
+              </button>
               <span style={{ fontSize:12, color:'#6366f1', fontWeight:600, flexShrink:0 }}>Edit →</span>
             </div>
           ))}
+        </div>
+      )}
+
+      {statsModal && (
+        <div onClick={() => setStatsModal(null)}
+          style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.4)', display:'flex',
+            alignItems:'center', justifyContent:'center', zIndex:1000, padding:20 }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background:'white', borderRadius:16, padding:24, maxWidth:420, width:'100%',
+              boxShadow:'0 10px 40px rgba(0,0,0,0.2)' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16 }}>
+              <h3 style={{ margin:0, fontSize:16, fontWeight:'bold', color:'#1e293b' }}>📊 {statsModal.city.nameEn}</h3>
+              <button onClick={() => setStatsModal(null)}
+                style={{ background:'none', border:'none', cursor:'pointer', fontSize:18, color:'#94a3b8' }}>✕</button>
+            </div>
+            <div style={{ display:'flex', flexDirection:'column', gap:10, fontSize:13 }}>
+              <div style={{ display:'flex', justifyContent:'space-between' }}>
+                <span style={{ color:'#64748b' }}>Total locations</span>
+                <span style={{ fontWeight:700, color:'#1e293b' }}>{statsModal.totalLocations}</span>
+              </div>
+              <div style={{ display:'flex', justifyContent:'space-between' }}>
+                <span style={{ color:'#64748b' }}>Database size (locations)</span>
+                <span style={{ fontWeight:700, color: statsModal.totalKB > 5000 ? '#dc2626' : '#1e293b' }}>{fmtSize(statsModal.totalKB)}</span>
+              </div>
+              <div style={{ display:'flex', justifyContent:'space-between' }}>
+                <span style={{ color:'#64748b' }}>With Storage-linked image</span>
+                <span style={{ fontWeight:700, color:'#16a34a' }}>{statsModal.storageCount}</span>
+              </div>
+              <div style={{ display:'flex', justifyContent:'space-between' }}>
+                <span style={{ color:'#64748b' }}>With embedded image (needs migration)</span>
+                <span style={{ fontWeight:700, color: statsModal.embeddedCount > 0 ? '#dc2626' : '#1e293b' }}>{statsModal.embeddedCount}</span>
+              </div>
+              <div style={{ display:'flex', justifyContent:'space-between' }}>
+                <span style={{ color:'#64748b' }}>Embedded images size</span>
+                <span style={{ fontWeight:700, color: statsModal.embeddedKB > 0 ? '#dc2626' : '#1e293b' }}>{fmtSize(statsModal.embeddedKB)}</span>
+              </div>
+              <div style={{ display:'flex', justifyContent:'space-between' }}>
+                <span style={{ color:'#64748b' }}>No image</span>
+                <span style={{ fontWeight:700, color:'#1e293b' }}>{statsModal.noImageCount}</span>
+              </div>
+            </div>
+            {statsModal.embeddedCount > 0 && (
+              <div style={{ marginTop:16, padding:'10px 12px', background:'#fef2f2', border:'1px solid #fecaca',
+                borderRadius:8, fontSize:12, color:'#991b1b', lineHeight:1.5 }}>
+                ⚠️ This city has embedded images bloating its data. Use Image Migrator (dashboard) to fix.
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
