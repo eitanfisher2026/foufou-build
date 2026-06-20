@@ -18,7 +18,7 @@ const auth = firebase.auth();
 const storage = firebase.storage();
 
 // Constants
-const VERSION = '1.0.9';
+const VERSION = '1.0.10';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -135,13 +135,14 @@ A street known for both may appear in both lists.
 Do NOT invent a street to fill the list — if you cannot think of {countDay} genuinely distinctive,
 well-documented streets, return fewer. A short, accurate list beats a padded, made-up one.
 
-For each suggestion:
+For each suggestion give THREE separate things — they serve different readers, do not merge them:
 - name: the real, official street/road name as it would appear on a map
-- reason: SPECIFIC and checkable — name the actual shops, culture, market, or atmosphere. Avoid generic phrases like "a charming street with shops."
+- reason: for the admin reviewing this list — SPECIFIC and checkable, naming the actual shops, culture, market, or atmosphere, so it can be verified even for a city the admin has never visited. Avoid generic phrases like "a charming street with shops."
+- description: for a tourist reading this in the app — 1-2 natural sentences, like a personal recommendation from someone who's been there. Warm, specific, not a Wikipedia entry.
 - transformsAtNight: true only if this is the SAME street with a notably different character after dark
 
 Return ONLY this JSON object, no markdown:
-{"dayStreets":[{"name":"...","reason":"...","transformsAtNight":false}],"nightStreets":[{"name":"...","reason":"...","transformsAtNight":false}]}`;
+{"dayStreets":[{"name":"...","reason":"...","description":"...","transformsAtNight":false}],"nightStreets":[{"name":"...","reason":"...","description":"...","transformsAtNight":false}]}`;
 const getStreetPrompt = () => localStorage.getItem('foufou_street_prompt') || DEFAULT_STREET_PROMPT;
 
 // ─── Interest Advisor prompts ─────────────────────────────────────────────────
@@ -2116,9 +2117,10 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
         if (!s.name) return;
         const key = normName(s.name);
         let entry = merged.get(key);
-        if (!entry) { entry = { name: s.name, interests: [], reasons: [] }; merged.set(key, entry); }
+        if (!entry) { entry = { name: s.name, interests: [], reasons: [], descriptions: [] }; merged.set(key, entry); }
         if (!entry.interests.includes(interestId)) entry.interests.push(interestId);
         if (s.reason) entry.reasons.push(s.reason);
+        if (s.description) entry.descriptions.push(s.description);
         if (s.transformsAtNight) {
           const other = interestId === 'i_day_street' ? 'i_night_street' : 'i_day_street';
           if (!entry.interests.includes(other)) entry.interests.push(other);
@@ -2162,7 +2164,7 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
       db.ref('cities/' + city.id + '/locations').push({
         id: Date.now() + Math.floor(Math.random() * 1000),
         nameEn: s.name, name: s.name,
-        description: s.reasons.filter(Boolean).join(' / '),
+        description: s.descriptions.filter(Boolean).join(' '),
         lat: s.lat, lng: s.lng,
         area: s._areaId || '', areas: s._areaId ? [s._areaId] : [],
         interests: s.interests, status: 'active',
@@ -2673,8 +2675,11 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
                             <span style={{ fontSize:10, fontWeight:700, padding:'2px 8px', borderRadius:10, background:'#fef3c7', color:'#92400e' }}>already exists — will be skipped</span>
                           )}
                         </div>
+                        {s.descriptions.map((d, di) => (
+                          <div key={di} style={{ fontSize:12, color:'#1e293b', marginTop:4 }}>{d}</div>
+                        ))}
                         {s.reasons.map((r, ri) => (
-                          <div key={ri} style={{ fontSize:12, color:'#64748b', marginTop:4 }}>{r}</div>
+                          <div key={ri} style={{ fontSize:11, color:'#94a3b8', marginTop:2, fontStyle:'italic' }}>✓ {r}</div>
                         ))}
                         {s.found && (
                           <div style={{ display:'flex', alignItems:'center', gap:8, marginTop:6 }}>
