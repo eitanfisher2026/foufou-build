@@ -18,7 +18,7 @@ const auth = firebase.auth();
 const storage = firebase.storage();
 
 // Constants
-const VERSION = '1.0.11';
+const VERSION = '1.0.12';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -268,6 +268,9 @@ COVERAGE: no blank spots inside the city boundary — use "local" areas to fill 
 
 const getAreasPrompt = () => localStorage.getItem('foufou_areas_prompt') || AREAS_PROMPT;
 const GOOGLE_KEY   = 'AIzaSyCE598tSisniM66ApqRvOyOq4svTf6pLHc';
+// Separate key for Geocoding API only — that API rejects referrer-restricted keys (which
+// GOOGLE_KEY is, for Places API), so it needs its own key, restricted to Geocoding API only.
+const GEOCODING_KEY = 'AIzaSyARmDFibcvbshbD3UWUNt7MfvVdMmcOvIk';
 const PLACES_URL   = 'https://places.googleapis.com/v1/places:searchText';
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
@@ -2073,7 +2076,7 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
   // Returns debugStatus/debugError/debugUrl always, even on success, so failures are diagnosable.
   const geocodeStreet = async (name, cityName, country) => {
     const query = encodeURIComponent(`${name}, ${cityName}${country ? ', ' + country : ''}`);
-    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${query}&key=${GOOGLE_KEY}`;
+    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${query}&key=${GEOCODING_KEY}`;
     try {
       const resp = await fetch(url);
       const data = await resp.json();
