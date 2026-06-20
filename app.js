@@ -18,7 +18,7 @@ const auth = firebase.auth();
 const storage = firebase.storage();
 
 // Constants
-const VERSION = '1.0.8';
+const VERSION = '1.0.9';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -1968,6 +1968,7 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
   const [streetError, setStreetError]     = useState('');
   const [draftStreets, setDraftStreets]   = useState(null);
   const [streetSaving, setStreetSaving]   = useState(false);
+  const [streetPrompt, setStreetPrompt]   = useState(getStreetPrompt);
 
   const switchProvider = (p) => { setFavProvider(p); setFavKey(getApiKey(p)); setFavModel(getModel(p)); };
 
@@ -2090,7 +2091,7 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
     setStreetGenerating(true); setStreetError(''); setDraftStreets([]);
     setStreetProgress('Asking AI for street suggestions...');
 
-    const prompt = getStreetPrompt()
+    const prompt = streetPrompt
       .replace(/\{cityName\}/g, city.nameEn || city.name)
       .replace(/\{country\}/g, city.country || '')
       .replace(/\{countDay\}/g, String(streetCount))
@@ -2365,12 +2366,16 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
               <a href={AI_PROVIDERS[favProvider].keyUrl} target="_blank" rel="noreferrer" style={{ fontSize:11, color:'#92400e' }}>Get key ↗</a>
             </div>
             <div style={{ display:'flex', alignItems:'flex-start', gap:8 }}>
-              <span style={{ fontSize:12, fontWeight:700, color:'#92400e', minWidth:50, paddingTop:4 }}>Prompt</span>
-              <textarea value={favPrompt} onChange={e => setFavPrompt(e.target.value)} rows={14} spellCheck={false}
+              <span style={{ fontSize:12, fontWeight:700, color:'#92400e', minWidth:50, paddingTop:4 }}>
+                Prompt{genMode === 'streets' ? ' (Streets)' : ' (Places)'}
+              </span>
+              <textarea value={genMode === 'streets' ? streetPrompt : favPrompt}
+                onChange={e => genMode === 'streets' ? setStreetPrompt(e.target.value) : setFavPrompt(e.target.value)}
+                rows={14} spellCheck={false}
                 style={{ flex:1, padding:'8px 10px', border:'1px solid #fcd34d', borderRadius:8, fontSize:12, fontFamily:'monospace', outline:'none', resize:'vertical', lineHeight:1.5 }} />
             </div>
             <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
-              <button onClick={() => setFavPrompt(DEFAULT_FAVORITES_PROMPT)}
+              <button onClick={() => genMode === 'streets' ? setStreetPrompt(DEFAULT_STREET_PROMPT) : setFavPrompt(DEFAULT_FAVORITES_PROMPT)}
                 style={{ padding:'6px 14px', fontSize:12, background:'white', border:'1px solid #fcd34d', borderRadius:8, cursor:'pointer', color:'#92400e' }}>Reset prompt</button>
               <button onClick={() => setShowKeyPanel(false)}
                 style={{ padding:'6px 14px', fontSize:12, background:'white', border:'1px solid #e2e8f0', borderRadius:8, cursor:'pointer', color:'#64748b' }}>Cancel</button>
@@ -2379,6 +2384,7 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
                 localStorage.setItem('foufou_ai_key_' + favProvider, favKey.trim());
                 localStorage.setItem('foufou_ai_model_' + favProvider, favModel.trim());
                 localStorage.setItem('foufou_favorites_prompt', favPrompt);
+                localStorage.setItem('foufou_street_prompt', streetPrompt);
                 setShowKeyPanel(false);
                 showToast('AI settings saved (' + AI_PROVIDERS[favProvider].name + ')', 'success');
               }} style={{ padding:'6px 14px', fontSize:12, background:'#d97706', color:'white', border:'none', borderRadius:8, cursor:'pointer', fontWeight:'bold' }}>Save</button>
