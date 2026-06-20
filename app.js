@@ -18,7 +18,7 @@ const auth = firebase.auth();
 const storage = firebase.storage();
 
 // Constants
-const VERSION = '1.0.10';
+const VERSION = '1.0.11';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -2070,17 +2070,22 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
 
   // Streets use Geocoding API, not Places — a curated street/road isn't a business listing.
   // This is also the existence check: if Google can't find it, we don't save it.
+  // Returns debugStatus/debugError/debugUrl always, even on success, so failures are diagnosable.
   const geocodeStreet = async (name, cityName, country) => {
+    const query = encodeURIComponent(`${name}, ${cityName}${country ? ', ' + country : ''}`);
+    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${query}&key=${GOOGLE_KEY}`;
     try {
-      const query = encodeURIComponent(`${name}, ${cityName}${country ? ', ' + country : ''}`);
-      const resp = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?address=${query}&key=${GOOGLE_KEY}`);
+      const resp = await fetch(url);
       const data = await resp.json();
       if (data.status === 'OK' && data.results && data.results[0]) {
         const loc = data.results[0].geometry.location;
-        return { found: true, lat: loc.lat, lng: loc.lng, formattedAddress: data.results[0].formatted_address };
+        return { found: true, lat: loc.lat, lng: loc.lng, formattedAddress: data.results[0].formatted_address,
+          debugStatus: data.status, debugUrl: url };
       }
-      return { found: false };
-    } catch (e) { return { found: false }; }
+      return { found: false, debugStatus: data.status || 'UNKNOWN', debugError: data.error_message || '', debugUrl: url };
+    } catch (e) {
+      return { found: false, debugStatus: 'FETCH_ERROR', debugError: e.message, debugUrl: url };
+    }
   };
 
   const generateStreets = async () => {
@@ -2130,29 +2135,36 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
     addEntries(parsed.dayStreets, 'i_day_street');
     addEntries(parsed.nightStreets, 'i_night_street');
 
-    // Verify each with Geocoding API (existence check) + assign area
-    const list = Array.from(merged.values());
-    const out = [];
-    for (let i = 0; i < list.length; i++) {
-      setStreetProgress(`Verifying "${list[i].name}" (${i + 1}/${list.length})`);
-      const g = await geocodeStreet(list[i].name, city.nameEn || city.name, city.country);
-      const { areaId, areaName } = g.found ? assignArea(g.lat, g.lng, cityAreas) : { areaId: '', areaName: '' };
-      out.push({
-        ...list[i],
-        found: g.found,
-        lat: g.lat || null, lng: g.lng || null,
-        formattedAddress: g.formattedAddress || '',
-        _areaId: areaId, _areaName: areaName,
-        isDupe: g.found ? isDupe({ nameEn: list[i].name, lat: g.lat, lng: g.lng }, existingPlaces) : false,
-      });
-      setDraftStreets([...out]);
-    }
+    // No automatic geocoding — click "Find coordinates" per row. Keeps each lookup
+    // individually inspectable instead of a bulk loop that just reports a final count.
+    const list = Array.from(merged.values()).map(s => ({
+      ...s, found: null, lat: null, lng: null, _areaId: '', _areaName: '', isDupe: false,
+    }));
+    setDraftStreets(list);
     setStreetGenerating(false); setStreetProgress('');
-    const notFound = out.filter(s => !s.found).length;
-    showToast(`Found ${out.length - notFound}/${out.length} streets on the map` + (notFound ? ` (${notFound} not found — excluded)` : ''), notFound ? 'warning' : 'success');
+    showToast(`Generated ${list.length} suggestion${list.length===1?'':'s'} — click "Find coordinates" on each to verify`, 'success');
   };
 
   const deleteDraftStreet = (i) => setDraftStreets(prev => prev.filter((_, idx) => idx !== i));
+
+  const findCoordinates = async (idx) => {
+    const city = cities[selectedKey];
+    const street = draftStreets && draftStreets[idx];
+    if (!city || !street) return;
+    setDraftStreets(prev => prev.map((s, i) => i === idx ? { ...s, geocoding: true } : s));
+    const g = await geocodeStreet(street.name, city.nameEn || city.name, city.country);
+    const { areaId, areaName } = g.found ? assignArea(g.lat, g.lng, cityAreas) : { areaId: '', areaName: '' };
+    setDraftStreets(prev => prev.map((s, i) => i === idx ? {
+      ...s,
+      geocoding: false,
+      found: g.found,
+      lat: g.lat ?? null, lng: g.lng ?? null,
+      formattedAddress: g.formattedAddress || '',
+      debugStatus: g.debugStatus || '', debugError: g.debugError || '', debugUrl: g.debugUrl || '',
+      _areaId: areaId, _areaName: areaName,
+      isDupe: g.found ? isDupe({ nameEn: street.name, lat: g.lat, lng: g.lng }, existingPlaces) : false,
+    } : s));
+  };
 
   const saveStreetsToFirebase = async () => {
     const city = cities[selectedKey];
@@ -2656,8 +2668,8 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
               </div>
               <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
                 {draftStreets.map((s, idx) => (
-                  <div key={idx} style={{ border:'1px solid ' + (!s.found ? '#fecaca' : s.isDupe ? '#fde68a' : '#e2e8f0'),
-                    borderRadius:10, padding:'10px 12px', background: !s.found ? '#fef2f2' : s.isDupe ? '#fffbeb' : '#f8fafc' }}>
+                  <div key={idx} style={{ border:'1px solid ' + (s.found === false ? '#fecaca' : s.isDupe ? '#fde68a' : '#e2e8f0'),
+                    borderRadius:10, padding:'10px 12px', background: s.found === false ? '#fef2f2' : s.isDupe ? '#fffbeb' : '#f8fafc' }}>
                     <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:8 }}>
                       <div style={{ flex:1, minWidth:0 }}>
                         <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
@@ -2668,8 +2680,8 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
                           {s.interests.includes('i_night_street') && (
                             <span style={{ fontSize:10, fontWeight:700, padding:'2px 8px', borderRadius:10, background:'#ede9fe', color:'#5b21b6' }}>🌃 Night</span>
                           )}
-                          {!s.found && (
-                            <span style={{ fontSize:10, fontWeight:700, padding:'2px 8px', borderRadius:10, background:'#fee2e2', color:'#991b1b' }}>⚠️ not found on map — will be skipped</span>
+                          {s.found === false && (
+                            <span style={{ fontSize:10, fontWeight:700, padding:'2px 8px', borderRadius:10, background:'#fee2e2', color:'#991b1b' }}>⚠️ not found — will be skipped</span>
                           )}
                           {s.found && s.isDupe && (
                             <span style={{ fontSize:10, fontWeight:700, padding:'2px 8px', borderRadius:10, background:'#fef3c7', color:'#92400e' }}>already exists — will be skipped</span>
@@ -2681,7 +2693,8 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
                         {s.reasons.map((r, ri) => (
                           <div key={ri} style={{ fontSize:11, color:'#94a3b8', marginTop:2, fontStyle:'italic' }}>✓ {r}</div>
                         ))}
-                        {s.found && (
+
+                        {s.found === true && (
                           <div style={{ display:'flex', alignItems:'center', gap:8, marginTop:6 }}>
                             <span style={{ fontSize:11, color:'#94a3b8' }}>📍 {s._areaName || 'no area'}</span>
                             <a href={`https://www.google.com/maps/search/${encodeURIComponent(s.name)}/@${s.lat},${s.lng},16z`}
@@ -2690,6 +2703,24 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
                             </a>
                           </div>
                         )}
+
+                        {s.found === false && (
+                          <div style={{ marginTop:6, padding:'6px 8px', background:'#fff1f2', border:'1px solid #fecaca', borderRadius:6, fontSize:11, color:'#991b1b', fontFamily:'monospace' }}>
+                            status: {s.debugStatus || 'unknown'}{s.debugError ? ` — ${s.debugError}` : ''}
+                            <br/>
+                            <a href={s.debugUrl} target="_blank" rel="noreferrer" style={{ color:'#991b1b' }}>open API request ↗</a>
+                          </div>
+                        )}
+
+                        <div style={{ marginTop:8 }}>
+                          <button onClick={() => findCoordinates(idx)} disabled={s.geocoding}
+                            style={{ fontSize:11, padding:'4px 10px', borderRadius:6, fontWeight:600, cursor: s.geocoding ? 'default' : 'pointer',
+                              border:'1px solid ' + (s.found === true ? '#bbf7d0' : '#c7d2fe'),
+                              background: s.geocoding ? '#f1f5f9' : s.found === true ? '#f0fdf4' : '#eef2ff',
+                              color: s.geocoding ? '#94a3b8' : s.found === true ? '#16a34a' : '#4338ca' }}>
+                            {s.geocoding ? 'Looking up...' : s.found === true ? '🔁 Re-check coordinates' : s.found === false ? '🔁 Retry' : '🔍 Find coordinates'}
+                          </button>
+                        </div>
                       </div>
                       <button onClick={() => deleteDraftStreet(idx)}
                         style={{ fontSize:11, padding:'3px 8px', borderRadius:6, border:'1px solid #fca5a5', background:'white', color:'#ef4444', cursor:'pointer', flexShrink:0 }}>✕</button>
