@@ -18,7 +18,7 @@ const auth = firebase.auth();
 const storage = firebase.storage();
 
 // Constants
-const VERSION = '1.0.12';
+const VERSION = '1.0.13';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -2071,6 +2071,15 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
     );
   };
 
+  // Streets need name-only dedup — the 150m proximity check above is meant for point
+  // places (don't double-add the same restaurant) and produces false positives for
+  // streets, which legitimately sit close to many unrelated existing venues (e.g. a
+  // gallery-district street will geocode near several existing gallery entries).
+  const isDupeStreet = (name, existing) => {
+    const nn = normName(name);
+    return existing.some(e => normName(e.nameEn) === nn || normName(e.name) === nn);
+  };
+
   // Streets use Geocoding API, not Places — a curated street/road isn't a business listing.
   // This is also the existence check: if Google can't find it, we don't save it.
   // Returns debugStatus/debugError/debugUrl always, even on success, so failures are diagnosable.
@@ -2165,7 +2174,7 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
       formattedAddress: g.formattedAddress || '',
       debugStatus: g.debugStatus || '', debugError: g.debugError || '', debugUrl: g.debugUrl || '',
       _areaId: areaId, _areaName: areaName,
-      isDupe: g.found ? isDupe({ nameEn: street.name, lat: g.lat, lng: g.lng }, existingPlaces) : false,
+      isDupe: g.found ? isDupeStreet(street.name, existingPlaces) : false,
     } : s));
   };
 
@@ -2175,6 +2184,7 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
     setStreetSaving(true);
     const toSave = draftStreets.filter(s => s.found && !s.isDupe);
     const skipped = draftStreets.length - toSave.length;
+    const now = new Date().toISOString();
     await Promise.all(toSave.map(s =>
       db.ref('cities/' + city.id + '/locations').push({
         id: Date.now() + Math.floor(Math.random() * 1000),
@@ -2183,14 +2193,15 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
         lat: s.lat, lng: s.lng,
         area: s._areaId || '', areas: s._areaId ? [s._areaId] : [],
         interests: s.interests, status: 'active',
-        addedBy: 'ai-gen', locked: true, aiGenerated: true,
+        addedBy: 'ai-gen', locked: false, aiGenerated: true,
+        addedAt: now, updatedAt: now,
       })
     ));
     setStreetSaving(false);
     const msg = skipped > 0
-      ? `Saved ${toSave.length} street${toSave.length===1?'':'s'} (${skipped} skipped — not found or duplicate)`
-      : `Saved ${toSave.length} street${toSave.length===1?'':'s'} to ${city.nameEn || city.name}`;
-    showToast(msg, 'success');
+      ? `Saved ${toSave.length} street${toSave.length===1?'':'s'} as drafts (${skipped} skipped — not found or duplicate name)`
+      : `Saved ${toSave.length} street${toSave.length===1?'':'s'} as drafts to ${city.nameEn || city.name} — review in Places before approving`;
+    showToast(msg, skipped > 0 ? 'warning' : 'success');
     setDraftStreets(null);
   };
 
