@@ -18,7 +18,7 @@ const auth = firebase.auth();
 const storage = firebase.storage();
 
 // Constants
-const VERSION = '1.0.7';
+const VERSION = '1.0.8';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -111,6 +111,38 @@ Quality rules:
 Return ONLY a JSON array, no markdown:
 [{"nameEn":"English name","descEn":"6-10 word vibe","lat":0.0000,"lng":0.0000}]`;
 const getFavoritesPrompt = () => localStorage.getItem('foufou_favorites_prompt') || DEFAULT_FAVORITES_PROMPT;
+
+// ─── Street seeding prompt (i_day_street / i_night_street — curated, no Google search) ──
+const DEFAULT_STREET_PROMPT = `City: {cityName}, {country}
+
+You are seeding a STARTING POINT for a tourist app — not the final word. Other contributors
+will add hidden gems manually afterward, so focus on real, well-documented streets only.
+
+Suggest streets or small districts in {cityName} that have a DISTINCTIVE, WELL-KNOWN character —
+the kind that would appear in a "best streets in {cityName}" travel article. These must be REAL,
+documented, recognizable destinations: an ethnic commercial enclave, a known nightlife/gallery
+district, a market street, or a street famous for transforming between day and night.
+
+Calibration examples (from Bangkok — do not reuse these for other cities):
+- Chinatown's market street — Chinese shops open during the day only
+- Song Wat Road — hipster shops, galleries, cafes, day and night
+- Yaowarat Road — an ordinary road by day, becomes a major food market at night
+
+Suggest up to {countDay} "day streets" — distinctive during the DAY (markets, shopping streets, ethnic enclaves, artisan districts).
+Suggest up to {countNight} "night streets" — distinctive at NIGHT (night markets, nightlife strips, streets that transform after dark).
+A street known for both may appear in both lists.
+
+Do NOT invent a street to fill the list — if you cannot think of {countDay} genuinely distinctive,
+well-documented streets, return fewer. A short, accurate list beats a padded, made-up one.
+
+For each suggestion:
+- name: the real, official street/road name as it would appear on a map
+- reason: SPECIFIC and checkable — name the actual shops, culture, market, or atmosphere. Avoid generic phrases like "a charming street with shops."
+- transformsAtNight: true only if this is the SAME street with a notably different character after dark
+
+Return ONLY this JSON object, no markdown:
+{"dayStreets":[{"name":"...","reason":"...","transformsAtNight":false}],"nightStreets":[{"name":"...","reason":"...","transformsAtNight":false}]}`;
+const getStreetPrompt = () => localStorage.getItem('foufou_street_prompt') || DEFAULT_STREET_PROMPT;
 
 // ─── Interest Advisor prompts ─────────────────────────────────────────────────
 const DEFAULT_SPOT_PROMPT = `City: {cityName}
@@ -1928,6 +1960,15 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
   const [favModel,    setFavModel]        = useState(() => getModel(getProvider()));
   const bkkCacheRef = useRef(null);
 
+  // Street seeding (i_day_street / i_night_street) — separate entry, separate pipeline
+  const [genMode, setGenMode]             = useState('places'); // 'places'|'streets'
+  const [streetCount, setStreetCount]     = useState(6);
+  const [streetGenerating, setStreetGenerating] = useState(false);
+  const [streetProgress, setStreetProgress]     = useState('');
+  const [streetError, setStreetError]     = useState('');
+  const [draftStreets, setDraftStreets]   = useState(null);
+  const [streetSaving, setStreetSaving]   = useState(false);
+
   const switchProvider = (p) => { setFavProvider(p); setFavKey(getApiKey(p)); setFavModel(getModel(p)); };
 
   useEffect(() => {
@@ -1945,7 +1986,9 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
         groupOrder[gId] = groups[gId]?.order ?? idx;
       });
       const list = Object.values(raw)
-        .filter(i => i.locked === true && i.labelEn)
+        // i_day_street/i_night_street are curated (noGoogleSearch) — handled by the
+        // separate Streets tab, not the regular AI-favorites-via-Google-lookup pipeline
+        .filter(i => i.locked === true && i.labelEn && i.id !== 'i_day_street' && i.id !== 'i_night_street')
         .sort((a, b) => {
           const ga = groupOrder[a.group || ''] ?? 99;
           const gb = groupOrder[b.group || ''] ?? 99;
@@ -2021,6 +2064,116 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
       normName(e.nameEn) === nn || normName(e.name) === nn ||
       (e.lat && e.lng && distM(place.lat, place.lng, e.lat, e.lng) < 150)
     );
+  };
+
+  // Streets use Geocoding API, not Places — a curated street/road isn't a business listing.
+  // This is also the existence check: if Google can't find it, we don't save it.
+  const geocodeStreet = async (name, cityName, country) => {
+    try {
+      const query = encodeURIComponent(`${name}, ${cityName}${country ? ', ' + country : ''}`);
+      const resp = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?address=${query}&key=${GOOGLE_KEY}`);
+      const data = await resp.json();
+      if (data.status === 'OK' && data.results && data.results[0]) {
+        const loc = data.results[0].geometry.location;
+        return { found: true, lat: loc.lat, lng: loc.lng, formattedAddress: data.results[0].formatted_address };
+      }
+      return { found: false };
+    } catch (e) { return { found: false }; }
+  };
+
+  const generateStreets = async () => {
+    const city = cities[selectedKey];
+    if (!city) return;
+    localStorage.setItem('foufou_ai_provider', favProvider);
+    localStorage.setItem('foufou_ai_key_' + favProvider, favKey.trim());
+    localStorage.setItem('foufou_ai_model_' + favProvider, favModel.trim());
+    setStreetGenerating(true); setStreetError(''); setDraftStreets([]);
+    setStreetProgress('Asking AI for street suggestions...');
+
+    const prompt = getStreetPrompt()
+      .replace(/\{cityName\}/g, city.nameEn || city.name)
+      .replace(/\{country\}/g, city.country || '')
+      .replace(/\{countDay\}/g, String(streetCount))
+      .replace(/\{countNight\}/g, String(streetCount));
+    const result = await callAI(prompt, 4096);
+    if (result && result.error) { setStreetError(result.error); setStreetGenerating(false); return; }
+
+    let parsed = null;
+    try {
+      const s = (result || '').replace(/```[a-z]*/g, '').replace(/```/g, '').trim();
+      try { parsed = JSON.parse(s); } catch (e) {}
+      if (!parsed) { const m = (result || '').match(/\{[\s\S]*\}/); if (m) try { parsed = JSON.parse(m[0]); } catch (e) {} }
+    } catch (e) {}
+    if (!parsed || (!Array.isArray(parsed.dayStreets) && !Array.isArray(parsed.nightStreets))) {
+      setStreetError('Could not parse AI response'); setStreetGenerating(false); return;
+    }
+
+    // Merge day/night by normalized name — a street suggested in both lists becomes one entry
+    const merged = new Map();
+    const addEntries = (arr, interestId) => {
+      (arr || []).forEach(s => {
+        if (!s.name) return;
+        const key = normName(s.name);
+        let entry = merged.get(key);
+        if (!entry) { entry = { name: s.name, interests: [], reasons: [] }; merged.set(key, entry); }
+        if (!entry.interests.includes(interestId)) entry.interests.push(interestId);
+        if (s.reason) entry.reasons.push(s.reason);
+        if (s.transformsAtNight) {
+          const other = interestId === 'i_day_street' ? 'i_night_street' : 'i_day_street';
+          if (!entry.interests.includes(other)) entry.interests.push(other);
+        }
+      });
+    };
+    addEntries(parsed.dayStreets, 'i_day_street');
+    addEntries(parsed.nightStreets, 'i_night_street');
+
+    // Verify each with Geocoding API (existence check) + assign area
+    const list = Array.from(merged.values());
+    const out = [];
+    for (let i = 0; i < list.length; i++) {
+      setStreetProgress(`Verifying "${list[i].name}" (${i + 1}/${list.length})`);
+      const g = await geocodeStreet(list[i].name, city.nameEn || city.name, city.country);
+      const { areaId, areaName } = g.found ? assignArea(g.lat, g.lng, cityAreas) : { areaId: '', areaName: '' };
+      out.push({
+        ...list[i],
+        found: g.found,
+        lat: g.lat || null, lng: g.lng || null,
+        formattedAddress: g.formattedAddress || '',
+        _areaId: areaId, _areaName: areaName,
+        isDupe: g.found ? isDupe({ nameEn: list[i].name, lat: g.lat, lng: g.lng }, existingPlaces) : false,
+      });
+      setDraftStreets([...out]);
+    }
+    setStreetGenerating(false); setStreetProgress('');
+    const notFound = out.filter(s => !s.found).length;
+    showToast(`Found ${out.length - notFound}/${out.length} streets on the map` + (notFound ? ` (${notFound} not found — excluded)` : ''), notFound ? 'warning' : 'success');
+  };
+
+  const deleteDraftStreet = (i) => setDraftStreets(prev => prev.filter((_, idx) => idx !== i));
+
+  const saveStreetsToFirebase = async () => {
+    const city = cities[selectedKey];
+    if (!city || !draftStreets || !draftStreets.length) return;
+    setStreetSaving(true);
+    const toSave = draftStreets.filter(s => s.found && !s.isDupe);
+    const skipped = draftStreets.length - toSave.length;
+    await Promise.all(toSave.map(s =>
+      db.ref('cities/' + city.id + '/locations').push({
+        id: Date.now() + Math.floor(Math.random() * 1000),
+        nameEn: s.name, name: s.name,
+        description: s.reasons.filter(Boolean).join(' / '),
+        lat: s.lat, lng: s.lng,
+        area: s._areaId || '', areas: s._areaId ? [s._areaId] : [],
+        interests: s.interests, status: 'active',
+        addedBy: 'ai-gen', locked: true, aiGenerated: true,
+      })
+    ));
+    setStreetSaving(false);
+    const msg = skipped > 0
+      ? `Saved ${toSave.length} street${toSave.length===1?'':'s'} (${skipped} skipped — not found or duplicate)`
+      : `Saved ${toSave.length} street${toSave.length===1?'':'s'} to ${city.nameEn || city.name}`;
+    showToast(msg, 'success');
+    setDraftStreets(null);
   };
 
   const generate = async () => {
@@ -2247,6 +2400,26 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
           )}
         </div>
 
+        {/* Mode tabs — Places (Google-verified) vs Streets (curated, Geocoding-verified) */}
+        <div style={{ display:'flex', gap:8, marginBottom:24 }}>
+          <button onClick={() => setGenMode('places')}
+            style={{ flex:1, padding:'10px 16px', borderRadius:10, fontWeight:700, fontSize:13, cursor:'pointer',
+              border:'2px solid ' + (genMode === 'places' ? '#f59e0b' : '#e2e8f0'),
+              background: genMode === 'places' ? '#fffbeb' : 'white',
+              color: genMode === 'places' ? '#92400e' : '#64748b' }}>
+            ⭐ Places
+          </button>
+          <button onClick={() => setGenMode('streets')}
+            style={{ flex:1, padding:'10px 16px', borderRadius:10, fontWeight:700, fontSize:13, cursor:'pointer',
+              border:'2px solid ' + (genMode === 'streets' ? '#7c3aed' : '#e2e8f0'),
+              background: genMode === 'streets' ? '#f5f3ff' : 'white',
+              color: genMode === 'streets' ? '#5b21b6' : '#64748b' }}>
+            🛣️ Streets (Day/Night — curated)
+          </button>
+        </div>
+
+        {genMode === 'places' && (<>
+
         <div style={{ marginBottom:16 }}>
           <button onClick={runIdMigration}
             style={{ fontSize:11, padding:'4px 12px', borderRadius:6, border:'1px solid #e2e8f0',
@@ -2432,6 +2605,90 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
             ))}
           </>
         )}
+
+        </>)}
+
+        {genMode === 'streets' && (<>
+          <div style={{ background:'white', borderRadius:16, border:'1px solid #e2e8f0', padding:20, marginBottom:20 }}>
+            <div style={{ fontSize:13, color:'#64748b', lineHeight:1.6, marginBottom:16 }}>
+              AI suggests real, well-documented streets with a distinctive day or night character —
+              a starting point, not the final word. Each suggestion is checked against Google's map
+              before it can be saved; anything not found is excluded automatically.
+            </div>
+            <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:16 }}>
+              <label style={{ fontSize:13, fontWeight:700, color:'#334155' }}>Suggestions per category</label>
+              <input type="number" min={1} max={15} value={streetCount}
+                onChange={e => setStreetCount(Math.max(1, Math.min(15, parseInt(e.target.value) || 1)))}
+                style={{ width:70, padding:'6px 10px', border:'1px solid #e2e8f0', borderRadius:8, fontSize:13, outline:'none' }} />
+            </div>
+            <button onClick={generateStreets} disabled={!selectedCity || streetGenerating}
+              style={{ padding:'10px 22px', background:(!selectedCity||streetGenerating)?'#c4b5fd':'#7c3aed',
+                color:'white', border:'none', borderRadius:10, fontSize:14, fontWeight:'bold',
+                cursor:(!selectedCity||streetGenerating)?'default':'pointer' }}>
+              {streetGenerating ? (streetProgress || 'Working...') : '✨ Generate day/night street suggestions'}
+            </button>
+            {streetError && (
+              <div style={{ marginTop:12, padding:'8px 12px', background:'#fef2f2', border:'1px solid #fecaca', borderRadius:8, fontSize:12, color:'#991b1b' }}>
+                {streetError}
+              </div>
+            )}
+          </div>
+
+          {draftStreets !== null && draftStreets.length > 0 && (
+            <div style={{ background:'white', borderRadius:16, border:'1px solid #e2e8f0', padding:20, marginBottom:20 }}>
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
+                <h3 style={{ margin:0, fontSize:14, fontWeight:'bold', color:'#1e293b' }}>
+                  {draftStreets.length} suggestion{draftStreets.length===1?'':'s'}
+                </h3>
+                <button onClick={saveStreetsToFirebase} disabled={streetSaving || !draftStreets.some(s => s.found && !s.isDupe)}
+                  style={{ padding:'8px 18px', borderRadius:8, fontSize:13, fontWeight:'bold', cursor:'pointer',
+                    border:'none', background: streetSaving ? '#86efac' : '#16a34a', color:'white' }}>
+                  {streetSaving ? 'Saving...' : `💾 Save ${draftStreets.filter(s => s.found && !s.isDupe).length}`}
+                </button>
+              </div>
+              <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+                {draftStreets.map((s, idx) => (
+                  <div key={idx} style={{ border:'1px solid ' + (!s.found ? '#fecaca' : s.isDupe ? '#fde68a' : '#e2e8f0'),
+                    borderRadius:10, padding:'10px 12px', background: !s.found ? '#fef2f2' : s.isDupe ? '#fffbeb' : '#f8fafc' }}>
+                    <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:8 }}>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
+                          <span style={{ fontSize:14, fontWeight:700, color:'#1e293b' }}>{s.name}</span>
+                          {s.interests.includes('i_day_street') && (
+                            <span style={{ fontSize:10, fontWeight:700, padding:'2px 8px', borderRadius:10, background:'#fef3c7', color:'#92400e' }}>🛣️ Day</span>
+                          )}
+                          {s.interests.includes('i_night_street') && (
+                            <span style={{ fontSize:10, fontWeight:700, padding:'2px 8px', borderRadius:10, background:'#ede9fe', color:'#5b21b6' }}>🌃 Night</span>
+                          )}
+                          {!s.found && (
+                            <span style={{ fontSize:10, fontWeight:700, padding:'2px 8px', borderRadius:10, background:'#fee2e2', color:'#991b1b' }}>⚠️ not found on map — will be skipped</span>
+                          )}
+                          {s.found && s.isDupe && (
+                            <span style={{ fontSize:10, fontWeight:700, padding:'2px 8px', borderRadius:10, background:'#fef3c7', color:'#92400e' }}>already exists — will be skipped</span>
+                          )}
+                        </div>
+                        {s.reasons.map((r, ri) => (
+                          <div key={ri} style={{ fontSize:12, color:'#64748b', marginTop:4 }}>{r}</div>
+                        ))}
+                        {s.found && (
+                          <div style={{ display:'flex', alignItems:'center', gap:8, marginTop:6 }}>
+                            <span style={{ fontSize:11, color:'#94a3b8' }}>📍 {s._areaName || 'no area'}</span>
+                            <a href={`https://www.google.com/maps/search/${encodeURIComponent(s.name)}/@${s.lat},${s.lng},16z`}
+                              target="_blank" rel="noreferrer" style={{ fontSize:11, color:'#2563eb', textDecoration:'none' }}>
+                              View on Google Maps ↗
+                            </a>
+                          </div>
+                        )}
+                      </div>
+                      <button onClick={() => deleteDraftStreet(idx)}
+                        style={{ fontSize:11, padding:'3px 8px', borderRadius:6, border:'1px solid #fca5a5', background:'white', color:'#ef4444', cursor:'pointer', flexShrink:0 }}>✕</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>)}
       </div>
     </div>
   );
