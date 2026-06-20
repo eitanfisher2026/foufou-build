@@ -18,7 +18,7 @@ const auth = firebase.auth();
 const storage = firebase.storage();
 
 // Constants
-const VERSION = '1.0.13';
+const VERSION = '1.0.14';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -720,8 +720,8 @@ function buildArea(a, i) {
 }
 
 // Toast -- errors and warnings stay open until manually closed; success/info auto-dismiss
-const Toast = ({ msg, type, onDone }) => {
-  const stayOpen = type === 'error' || type === 'warning';
+const Toast = ({ msg, type, onDone, sticky }) => {
+  const stayOpen = sticky || type === 'error' || type === 'warning';
   useEffect(() => {
     if (stayOpen) return;
     const t = setTimeout(onDone, 3500);
@@ -2201,7 +2201,7 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
     const msg = skipped > 0
       ? `Saved ${toSave.length} street${toSave.length===1?'':'s'} as drafts (${skipped} skipped — not found or duplicate name)`
       : `Saved ${toSave.length} street${toSave.length===1?'':'s'} as drafts to ${city.nameEn || city.name} — review in Places before approving`;
-    showToast(msg, skipped > 0 ? 'warning' : 'success');
+    showToast(msg, skipped > 0 ? 'warning' : 'success', true);
     setDraftStreets(null);
   };
 
@@ -4558,7 +4558,7 @@ const FouFouBuild = () => {
     showToast('AI settings saved (' + AI_PROVIDERS[headerProvider].name + ')', 'success');
   };
 
-  const showToast = (msg, type) => setToast({ msg, type:type||'info', key:Date.now() });
+  const showToast = (msg, type, sticky) => setToast({ msg, type:type||'info', key:Date.now(), sticky: !!sticky });
 
   useEffect(() => {
     auth.getRedirectResult().catch(() => {});
@@ -4732,7 +4732,7 @@ const FouFouBuild = () => {
         />
       )}
 
-      {toast && <Toast key={toast.key} msg={toast.msg} type={toast.type} onDone={() => setToast(null)} />}
+      {toast && <Toast key={toast.key} msg={toast.msg} type={toast.type} sticky={toast.sticky} onDone={() => setToast(null)} />}
     </div>
   );
 };
