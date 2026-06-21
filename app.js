@@ -18,7 +18,7 @@ const auth = firebase.auth();
 const storage = firebase.storage();
 
 // Constants
-const VERSION = '1.0.14';
+const VERSION = '1.0.15';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -2216,6 +2216,7 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
     setGenerating(true); setGenError(''); setDraftPlaces([]); setEditingIdx(null);
     setFilteredCount(0);
     const all = []; let filtered = 0; let closed = 0;
+    const issues = []; // per-interest parse failures / empty results, shown at the end instead of silently dropped
     const iconText = (i) => i.icon && !i.icon.startsWith('data:') && !i.icon.startsWith('http') ? i.icon + ' ' : '';
     for (let i = 0; i < toRun.length; i++) {
       const interest = toRun[i];
@@ -2237,7 +2238,13 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
         try { arr = JSON.parse(s); } catch(e) {}
         if (!Array.isArray(arr)) { const m = (result||'').match(/\[\s*\{[\s\S]*?\}\s*\]/); if (m) try { arr = JSON.parse(m[0]); } catch(e) {} }
       } catch(e) {}
-      if (!Array.isArray(arr)) continue;
+      if (!Array.isArray(arr)) {
+        issues.push(`"${interest.labelEn}": could not parse AI response. Raw:\n${(result || '(empty)').slice(0, 800)}`);
+        continue;
+      }
+      if (arr.length === 0) {
+        issues.push(`"${interest.labelEn}": AI returned 0 candidates (likely excluded everything as too famous, or found no genuine hidden gems)`);
+      }
 
       // Step 2: dedup filter
       const candidates = arr.filter(p => p.nameEn && p.lat && p.lng).filter(p => {
@@ -2264,12 +2271,11 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
       setFilteredCount(filtered);
     }
     setGenerating(false); setGenProgress('');
-    if (all.length) {
-      const parts = [`Generated ${all.length} places`];
-      if (filtered) parts.push(`${filtered} duplicates`);
-      if (closed) parts.push(`${closed} closed`);
-      showToast(parts.join(' · ') + ' filtered', 'success');
-    }
+    const parts = [`Generated ${all.length} place${all.length===1?'':'s'}`];
+    if (filtered) parts.push(`${filtered} duplicates`);
+    if (closed) parts.push(`${closed} closed`);
+    showToast(parts.join(' · ') + (filtered || closed ? ' filtered' : ''), all.length ? 'success' : 'warning', true);
+    if (issues.length) setGenError(issues.join('\n\n'));
   };
 
   const saveToFirebase = async () => {
@@ -2535,7 +2541,7 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
         )}
 
         {genError && (
-          <div style={{ background:'#fef2f2', border:'1px solid #fca5a5', borderRadius:10, padding:'12px 16px', margin:'16px 0', fontSize:13, color:'#dc2626' }}>
+          <div style={{ background:'#fef2f2', border:'1px solid #fca5a5', borderRadius:10, padding:'12px 16px', margin:'16px 0', fontSize:13, color:'#dc2626', whiteSpace:'pre-wrap', fontFamily:'monospace', maxHeight:300, overflowY:'auto' }}>
             {genError}
           </div>
         )}
