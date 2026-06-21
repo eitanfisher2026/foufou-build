@@ -18,7 +18,7 @@ const auth = firebase.auth();
 const storage = firebase.storage();
 
 // Constants
-const VERSION = '1.0.17';
+const VERSION = '1.0.18';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -2224,9 +2224,13 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
   };
 
   // Classifies every AI candidate instead of silently dropping rejects - each gets a
-  // _status ('kept'|'duplicate'|'closed'|'invalid') so the review list can show why a
-  // place didn't make it, instead of just a count. dedupAgainst = kept places to compare
-  // against in addition to existingPlaces (callers pass already-kept places from this run).
+  // _status ('kept'|'closed'|'invalid') so the review list can show why a place didn't
+  // make it, instead of just a count. dedupAgainst = kept places to compare against in
+  // addition to existingPlaces (callers pass already-kept places from this run).
+  // NOTE: a possible-duplicate match does NOT exclude a place - the 150m proximity check
+  // produced too many false positives (e.g. an unrelated place landing near an area-style
+  // pick). It stays 'kept' and editable; _possibleDupe just attaches a visible warning so
+  // the human reviewing the list decides, instead of the system silently filtering it.
   const classifyCandidates = async (arr, interest, dedupAgainst) => {
     const out = [];
     for (const p of arr) {
@@ -2235,10 +2239,6 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
         continue;
       }
       const dupeMatch = findDupeMatch(p, existingPlaces) || findDupeMatch(p, dedupAgainst);
-      if (dupeMatch) {
-        out.push({ ...p, _status: 'duplicate', _dupeMatch: dupeMatch, _iid: interest.id, _iname: interest.labelEn, _iicon: interest.icon || '📍' });
-        continue;
-      }
       const g = await lookupPlace(p);
       if (g.found && (g.status === 'CLOSED_TEMPORARILY' || g.status === 'CLOSED_PERMANENTLY')) {
         out.push({ ...p, _status: 'closed', _closedStatus: g.status, _iid: interest.id, _iname: interest.labelEn, _iicon: interest.icon || '📍' });
@@ -2246,7 +2246,7 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
       }
       const { areaId, areaName } = assignArea(p.lat, p.lng, cityAreas);
       out.push({
-        ...p, _status: 'kept',
+        ...p, _status: 'kept', _possibleDupe: dupeMatch || null,
         googleRating: g.rating || null,
         googleRatingCount: g.ratingCount || 0,
         googlePlaceId: g.placeId || null,
@@ -2303,7 +2303,7 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
       const classified = await classifyCandidates(arr, interest, all.filter(x => x._status === 'kept'));
       all.push(...classified);
       setDraftPlaces([...all]);
-      setFilteredCount(all.filter(x => x._status === 'duplicate').length);
+      setFilteredCount(all.filter(x => x._status === 'kept' && x._possibleDupe).length);
     }
     setGenerating(false); setGenProgress('');
     const keptTotal = all.filter(x => x._status === 'kept').length;
@@ -2366,11 +2366,11 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
     const city = cities[selectedKey];
     if (!city || !draftPlaces || !draftPlaces.length) return;
     setSaving(true);
-    // Only 'kept' entries are real candidates — duplicate/closed/invalid ones stay in
-    // draftPlaces purely so the review list can show why they were rejected.
-    const keptPlaces = draftPlaces.filter(p => p._status === 'kept');
-    const toSave = keptPlaces.filter(p => !isDupe(p, existingPlaces));
-    const skipped = keptPlaces.length - toSave.length;
+    // Only 'kept' entries are real candidates — closed/invalid ones stay in draftPlaces
+    // purely so the review list can show why they were rejected. Possible-duplicates are
+    // included here too — that's a visible warning for the human to act on, not an
+    // automatic exclusion (the proximity check had too many false positives to trust blindly).
+    const toSave = draftPlaces.filter(p => p._status === 'kept');
     await Promise.all(toSave.map(p =>
       db.ref('cities/' + city.id + '/locations').push({
         id: Date.now() + Math.floor(Math.random() * 1000),
@@ -2386,10 +2386,7 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
       })
     ));
     setSaving(false);
-    const msg = skipped > 0
-      ? `Saved ${toSave.length} places (${skipped} skipped as duplicates)`
-      : `Saved ${toSave.length} places to ${city.nameEn || city.name}`;
-    showToast(msg, 'success');
+    showToast(`Saved ${toSave.length} place${toSave.length===1?'':'s'} to ${city.nameEn || city.name}`, 'success', true);
     setDraftPlaces(null);
   };
 
@@ -2649,7 +2646,7 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
                   style={{ padding:'10px 16px', background:'white', color:'#64748b', border:'1px solid #e2e8f0', borderRadius:10, fontSize:13, cursor:'pointer' }}>Discard</button>
                 <span style={{ fontSize:12, color:'#f59e0b', fontWeight:600 }}>● {draftPlaces.filter(p => p._status==='kept').length} places — not saved yet</span>
                 {filteredCount > 0 && (
-                  <span style={{ fontSize:12, color:'#94a3b8' }}>{filteredCount} duplicates filtered out</span>
+                  <span style={{ fontSize:12, color:'#c2410c' }}>⚠️ {filteredCount} possible duplicate{filteredCount===1?'':'s'} — review before saving</span>
                 )}
               </>}
             </div>
@@ -2680,14 +2677,7 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
                   {draftPlaces.map((place, idx) => {
                     if (place._iid !== interest.id) return null;
                     if (place._status !== 'kept') {
-                      const dm = place._dupeMatch;
-                      const badge = place._status === 'duplicate'
-                        ? { label: dm
-                            ? (dm.reason === 'proximity'
-                                ? `🔁 Duplicate — ${dm.distance}m from "${dm.name}"`
-                                : `🔁 Duplicate — same name as "${dm.name}"`)
-                            : '🔁 Duplicate — already exists', color:'#92400e', bg:'#fef3c7', border:'#fde68a' }
-                        : place._status === 'closed'
+                      const badge = place._status === 'closed'
                         ? { label:`🚫 Closed (${place._closedStatus || 'unknown'})`, color:'#991b1b', bg:'#fef2f2', border:'#fecaca' }
                         : { label:'⚠️ Invalid — missing name or coordinates', color:'#64748b', bg:'#f1f5f9', border:'#e2e8f0' };
                       return (
@@ -2705,7 +2695,14 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
                     }
                     const isEditing = editingIdx === idx;
                     return (
-                      <div key={idx} style={{ background:'white', borderRadius:12, border:'1px solid #fde68a', padding:'12px 16px' }}>
+                      <div key={idx} style={{ background:'white', borderRadius:12, border: place._possibleDupe ? '1px solid #fdba74' : '1px solid #fde68a', padding:'12px 16px' }}>
+                        {place._possibleDupe && (
+                          <div style={{ fontSize:11, fontWeight:700, color:'#c2410c', background:'#fff7ed', border:'1px solid #fed7aa', borderRadius:6, padding:'4px 8px', marginBottom:8 }}>
+                            ⚠️ Possible duplicate — {place._possibleDupe.reason === 'proximity'
+                              ? `${place._possibleDupe.distance}m from "${place._possibleDupe.name}"`
+                              : `same name as "${place._possibleDupe.name}"`} (not auto-excluded — your call)
+                          </div>
+                        )}
                         {isEditing ? (
                           <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
                             <div style={{ flex:1 }}>
