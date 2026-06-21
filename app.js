@@ -18,7 +18,7 @@ const auth = firebase.auth();
 const storage = firebase.storage();
 
 // Constants
-const VERSION = '1.0.16';
+const VERSION = '1.0.17';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -2071,6 +2071,23 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
       (e.lat && e.lng && distM(place.lat, place.lng, e.lat, e.lng) < 150)
     );
   };
+  // Same check as isDupe, but returns *what* matched and *why* — for the Favorites
+  // Generator review list, where "duplicate" with no explanation isn't verifiable.
+  const findDupeMatch = (place, existing) => {
+    const nn = normName(place.nameEn);
+    for (const e of existing) {
+      if (normName(e.nameEn) === nn || normName(e.name) === nn) {
+        return { name: e.nameEn || e.name, reason: 'name' };
+      }
+    }
+    for (const e of existing) {
+      if (e.lat && e.lng) {
+        const d = distM(place.lat, place.lng, e.lat, e.lng);
+        if (d < 150) return { name: e.nameEn || e.name, reason: 'proximity', distance: Math.round(d) };
+      }
+    }
+    return null;
+  };
 
   // Streets need name-only dedup — the 150m proximity check above is meant for point
   // places (don't double-add the same restaurant) and produces false positives for
@@ -2217,8 +2234,9 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
         out.push({ ...p, _status: 'invalid', _iid: interest.id, _iname: interest.labelEn, _iicon: interest.icon || '📍' });
         continue;
       }
-      if (isDupe(p, existingPlaces) || isDupe(p, dedupAgainst)) {
-        out.push({ ...p, _status: 'duplicate', _iid: interest.id, _iname: interest.labelEn, _iicon: interest.icon || '📍' });
+      const dupeMatch = findDupeMatch(p, existingPlaces) || findDupeMatch(p, dedupAgainst);
+      if (dupeMatch) {
+        out.push({ ...p, _status: 'duplicate', _dupeMatch: dupeMatch, _iid: interest.id, _iname: interest.labelEn, _iicon: interest.icon || '📍' });
         continue;
       }
       const g = await lookupPlace(p);
@@ -2662,8 +2680,13 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
                   {draftPlaces.map((place, idx) => {
                     if (place._iid !== interest.id) return null;
                     if (place._status !== 'kept') {
+                      const dm = place._dupeMatch;
                       const badge = place._status === 'duplicate'
-                        ? { label:'🔁 Duplicate — already exists', color:'#92400e', bg:'#fef3c7', border:'#fde68a' }
+                        ? { label: dm
+                            ? (dm.reason === 'proximity'
+                                ? `🔁 Duplicate — ${dm.distance}m from "${dm.name}"`
+                                : `🔁 Duplicate — same name as "${dm.name}"`)
+                            : '🔁 Duplicate — already exists', color:'#92400e', bg:'#fef3c7', border:'#fde68a' }
                         : place._status === 'closed'
                         ? { label:`🚫 Closed (${place._closedStatus || 'unknown'})`, color:'#991b1b', bg:'#fef2f2', border:'#fecaca' }
                         : { label:'⚠️ Invalid — missing name or coordinates', color:'#64748b', bg:'#f1f5f9', border:'#e2e8f0' };
