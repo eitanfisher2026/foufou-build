@@ -18,7 +18,7 @@ const auth = firebase.auth();
 const storage = firebase.storage();
 
 // Constants
-const VERSION = '1.0.15';
+const VERSION = '1.0.16';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -1955,6 +1955,7 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
   const [genProgress, setGenProgress]     = useState('');
   const [genError, setGenError]           = useState('');
   const [draftPlaces, setDraftPlaces]     = useState(null);
+  const [retryingInterest, setRetryingInterest] = useState(null); // interest id currently fetching more
   const [saving, setSaving]               = useState(false);
   const [editingIdx, setEditingIdx]       = useState(null);
   const [showKeyPanel, setShowKeyPanel]   = useState(false);
@@ -2205,6 +2206,39 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
     setDraftStreets(null);
   };
 
+  // Classifies every AI candidate instead of silently dropping rejects - each gets a
+  // _status ('kept'|'duplicate'|'closed'|'invalid') so the review list can show why a
+  // place didn't make it, instead of just a count. dedupAgainst = kept places to compare
+  // against in addition to existingPlaces (callers pass already-kept places from this run).
+  const classifyCandidates = async (arr, interest, dedupAgainst) => {
+    const out = [];
+    for (const p of arr) {
+      if (!p.nameEn || !p.lat || !p.lng) {
+        out.push({ ...p, _status: 'invalid', _iid: interest.id, _iname: interest.labelEn, _iicon: interest.icon || '📍' });
+        continue;
+      }
+      if (isDupe(p, existingPlaces) || isDupe(p, dedupAgainst)) {
+        out.push({ ...p, _status: 'duplicate', _iid: interest.id, _iname: interest.labelEn, _iicon: interest.icon || '📍' });
+        continue;
+      }
+      const g = await lookupPlace(p);
+      if (g.found && (g.status === 'CLOSED_TEMPORARILY' || g.status === 'CLOSED_PERMANENTLY')) {
+        out.push({ ...p, _status: 'closed', _closedStatus: g.status, _iid: interest.id, _iname: interest.labelEn, _iicon: interest.icon || '📍' });
+        continue;
+      }
+      const { areaId, areaName } = assignArea(p.lat, p.lng, cityAreas);
+      out.push({
+        ...p, _status: 'kept',
+        googleRating: g.rating || null,
+        googleRatingCount: g.ratingCount || 0,
+        googlePlaceId: g.placeId || null,
+        _iid: interest.id, _iname: interest.labelEn, _iicon: interest.icon || '📍',
+        _areaId: areaId, _areaName: areaName,
+      });
+    }
+    return out;
+  };
+
   const generate = async () => {
     const city = cities[selectedKey];
     if (!city) return;
@@ -2215,7 +2249,7 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
     localStorage.setItem('foufou_ai_model_' + favProvider, favModel.trim());
     setGenerating(true); setGenError(''); setDraftPlaces([]); setEditingIdx(null);
     setFilteredCount(0);
-    const all = []; let filtered = 0; let closed = 0;
+    const all = [];
     const issues = []; // per-interest parse failures / empty results, shown at the end instead of silently dropped
     const iconText = (i) => i.icon && !i.icon.startsWith('data:') && !i.icon.startsWith('http') ? i.icon + ' ' : '';
     for (let i = 0; i < toRun.length; i++) {
@@ -2246,44 +2280,79 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
         issues.push(`"${interest.labelEn}": AI returned 0 candidates (likely excluded everything as too famous, or found no genuine hidden gems)`);
       }
 
-      // Step 2: dedup filter
-      const candidates = arr.filter(p => p.nameEn && p.lat && p.lng).filter(p => {
-        if (isDupe(p, existingPlaces) || isDupe(p, all)) { filtered++; return false; }
-        return true;
-      });
-
-      // Step 3: Google lookup — status + rating + placeId in one call
+      // Step 2+3: classify (dedup + Google verification) — every candidate, not just survivors
       setGenProgress(`Verifying ${label}`);
-      for (const p of candidates) {
-        const g = await lookupPlace(p);
-        if (g.found && (g.status === 'CLOSED_TEMPORARILY' || g.status === 'CLOSED_PERMANENTLY')) { closed++; continue; }
-        const { areaId, areaName } = assignArea(p.lat, p.lng, cityAreas);
-        all.push({
-          ...p,
-          googleRating: g.rating || null,
-          googleRatingCount: g.ratingCount || 0,
-          googlePlaceId: g.placeId || null,
-          _iid: interest.id, _iname: interest.labelEn, _iicon: interest.icon || '📍',
-          _areaId: areaId, _areaName: areaName,
-        });
-      }
+      const classified = await classifyCandidates(arr, interest, all.filter(x => x._status === 'kept'));
+      all.push(...classified);
       setDraftPlaces([...all]);
-      setFilteredCount(filtered);
+      setFilteredCount(all.filter(x => x._status === 'duplicate').length);
     }
     setGenerating(false); setGenProgress('');
-    const parts = [`Generated ${all.length} place${all.length===1?'':'s'}`];
-    if (filtered) parts.push(`${filtered} duplicates`);
-    if (closed) parts.push(`${closed} closed`);
-    showToast(parts.join(' · ') + (filtered || closed ? ' filtered' : ''), all.length ? 'success' : 'warning', true);
+    const keptTotal = all.filter(x => x._status === 'kept').length;
+    const dupTotal = all.filter(x => x._status === 'duplicate').length;
+    const closedTotal = all.filter(x => x._status === 'closed').length;
+    const parts = [`Generated ${keptTotal} place${keptTotal===1?'':'s'}`];
+    if (dupTotal) parts.push(`${dupTotal} duplicates`);
+    if (closedTotal) parts.push(`${closedTotal} closed`);
+    showToast(parts.join(' · ') + (dupTotal || closedTotal ? ' filtered' : ''), keptTotal ? 'success' : 'warning', true);
     if (issues.length) setGenError(issues.join('\n\n'));
+  };
+
+  // Manual top-up for one interest — asks for exactly the shortfall, excluding every name
+  // already seen (kept, duplicate, closed, or invalid) so it doesn't just re-suggest the
+  // same rejected candidates. Not automatic by design: each retry is a real AI + Google
+  // verification cost, and a city/interest with genuinely few hidden gems would otherwise
+  // retry uselessly.
+  const retryInterest = async (interest) => {
+    const city = cities[selectedKey];
+    if (!city) return;
+    const entries = draftPlaces.filter(p => p._iid === interest.id);
+    const keptCount = entries.filter(p => p._status === 'kept').length;
+    const shortfall = countPer - keptCount;
+    if (shortfall <= 0) return;
+    setRetryingInterest(interest.id);
+    try {
+      const examples = await getBangkokExamples(interest.id);
+      const excludeNames = entries.map(p => p.nameEn).filter(Boolean);
+      let prompt = favPrompt
+        .replace(/\{cityName\}/g, city.nameEn || city.name)
+        .replace(/\{interestName\}/g, interest.labelEn)
+        .replace(/\{count\}/g, String(shortfall))
+        .replace(/\{bangkokExamples\}/g, examples);
+      if (excludeNames.length) {
+        prompt += `\n\nIMPORTANT: Do not suggest any of these — already tried in this session:\n${excludeNames.map(n => `- ${n}`).join('\n')}`;
+      }
+      const result = await callAI(prompt, 8192);
+      if (result && result.error) { setGenError(`"${interest.labelEn}" retry error: ${result.error}`); return; }
+      let arr = null;
+      try {
+        const s = (result||'').replace(/```[a-z]*/g,'').replace(/```/g,'').trim();
+        try { arr = JSON.parse(s); } catch(e) {}
+        if (!Array.isArray(arr)) { const m = (result||'').match(/\[\s*\{[\s\S]*?\}\s*\]/); if (m) try { arr = JSON.parse(m[0]); } catch(e) {} }
+      } catch(e) {}
+      if (!Array.isArray(arr)) {
+        setGenError(`"${interest.labelEn}" retry: could not parse AI response. Raw:\n${(result || '(empty)').slice(0, 800)}`);
+        return;
+      }
+      const keptSoFar = draftPlaces.filter(p => p._status === 'kept');
+      const classified = await classifyCandidates(arr, interest, keptSoFar);
+      setDraftPlaces(prev => [...prev, ...classified]);
+      const newKept = classified.filter(c => c._status === 'kept').length;
+      showToast(`Got ${newKept} more for "${interest.labelEn}"` + (classified.length > newKept ? ` (${classified.length - newKept} filtered)` : ''), newKept ? 'success' : 'warning', true);
+    } finally {
+      setRetryingInterest(null);
+    }
   };
 
   const saveToFirebase = async () => {
     const city = cities[selectedKey];
     if (!city || !draftPlaces || !draftPlaces.length) return;
     setSaving(true);
-    const toSave = draftPlaces.filter(p => !isDupe(p, existingPlaces));
-    const skipped = draftPlaces.length - toSave.length;
+    // Only 'kept' entries are real candidates — duplicate/closed/invalid ones stay in
+    // draftPlaces purely so the review list can show why they were rejected.
+    const keptPlaces = draftPlaces.filter(p => p._status === 'kept');
+    const toSave = keptPlaces.filter(p => !isDupe(p, existingPlaces));
+    const skipped = keptPlaces.length - toSave.length;
     await Promise.all(toSave.map(p =>
       db.ref('cities/' + city.id + '/locations').push({
         id: Date.now() + Math.floor(Math.random() * 1000),
@@ -2554,32 +2623,63 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
                 style={{ padding:'10px 24px', background: (saving||generating)?'#86efac':'#10b981',
                   color:'white', border:'none', borderRadius:10, fontSize:14, fontWeight:'bold',
                   cursor:(saving||generating)?'default':'pointer' }}>
-                {saving ? 'Saving...' : `💾 Save ${draftPlaces.length} places`}
+                {saving ? 'Saving...' : `💾 Save ${draftPlaces.filter(p => p._status==='kept').length} places`}
               </button>
               {generating && <span style={{ fontSize:12, color:'#f59e0b', fontWeight:600 }}>⏳ Still generating: {genProgress}</span>}
               {!generating && <>
                 <button onClick={() => { setDraftPlaces(null); setEditingIdx(null); }}
                   style={{ padding:'10px 16px', background:'white', color:'#64748b', border:'1px solid #e2e8f0', borderRadius:10, fontSize:13, cursor:'pointer' }}>Discard</button>
-                <span style={{ fontSize:12, color:'#f59e0b', fontWeight:600 }}>● {draftPlaces.length} places — not saved yet</span>
+                <span style={{ fontSize:12, color:'#f59e0b', fontWeight:600 }}>● {draftPlaces.filter(p => p._status==='kept').length} places — not saved yet</span>
                 {filteredCount > 0 && (
                   <span style={{ fontSize:12, color:'#94a3b8' }}>{filteredCount} duplicates filtered out</span>
                 )}
               </>}
             </div>
 
-            {interestsInDraft.map(interest => (
+            {interestsInDraft.map(interest => {
+              const entries = draftPlaces.filter(p => p._iid === interest.id);
+              const keptCount = entries.filter(p => p._status === 'kept').length;
+              const shortfall = countPer - keptCount;
+              return (
               <div key={interest.id} style={{ marginBottom:28 }}>
-                <div style={{ fontSize:13, fontWeight:700, color:'#92400e', marginBottom:8, display:'flex', alignItems:'center', gap:6 }}>
+                <div style={{ fontSize:13, fontWeight:700, color:'#92400e', marginBottom:8, display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
                   {interest.icon?.startsWith('data:') || interest.icon?.startsWith('http')
                     ? <img src={interest.icon} alt="" style={{ height:'1em', width:'1em', verticalAlign:'middle', objectFit:'contain' }} />
                     : (interest.icon || '')} {interest.labelEn}
                   <span style={{ fontSize:11, color:'#94a3b8', fontWeight:400 }}>
-                    ({draftPlaces.filter(p => p._iid===interest.id).length} places)
+                    ({keptCount}/{countPer} kept{entries.length > keptCount ? `, ${entries.length - keptCount} filtered` : ''})
                   </span>
+                  {shortfall > 0 && !generating && (
+                    <button onClick={() => retryInterest(interest)} disabled={retryingInterest === interest.id}
+                      style={{ fontSize:11, padding:'2px 10px', borderRadius:20, fontWeight:600,
+                        cursor: retryingInterest === interest.id ? 'default' : 'pointer',
+                        border:'1px solid #c7d2fe', background: retryingInterest === interest.id ? '#f1f5f9' : '#eef2ff', color:'#4338ca' }}>
+                      {retryingInterest === interest.id ? 'Getting more...' : `🔄 Get ${shortfall} more`}
+                    </button>
+                  )}
                 </div>
                 <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
                   {draftPlaces.map((place, idx) => {
                     if (place._iid !== interest.id) return null;
+                    if (place._status !== 'kept') {
+                      const badge = place._status === 'duplicate'
+                        ? { label:'🔁 Duplicate — already exists', color:'#92400e', bg:'#fef3c7', border:'#fde68a' }
+                        : place._status === 'closed'
+                        ? { label:`🚫 Closed (${place._closedStatus || 'unknown'})`, color:'#991b1b', bg:'#fef2f2', border:'#fecaca' }
+                        : { label:'⚠️ Invalid — missing name or coordinates', color:'#64748b', bg:'#f1f5f9', border:'#e2e8f0' };
+                      return (
+                        <div key={idx} style={{ background:badge.bg, borderRadius:12, border:`1px solid ${badge.border}`, padding:'10px 16px' }}>
+                          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:8 }}>
+                            <div>
+                              <span style={{ fontSize:13, fontWeight:600, color:'#1e293b', textDecoration:'line-through' }}>{place.nameEn || '(unnamed)'}</span>
+                              <span style={{ fontSize:11, fontWeight:700, color:badge.color, marginLeft:8 }}>{badge.label}</span>
+                            </div>
+                            <button onClick={() => deleteDraft(idx)}
+                              style={{ fontSize:11, padding:'3px 8px', borderRadius:6, border:'1px solid #e2e8f0', background:'white', color:'#94a3b8', cursor:'pointer', flexShrink:0 }}>✕</button>
+                          </div>
+                        </div>
+                      );
+                    }
                     const isEditing = editingIdx === idx;
                     return (
                       <div key={idx} style={{ background:'white', borderRadius:12, border:'1px solid #fde68a', padding:'12px 16px' }}>
@@ -2642,7 +2742,8 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
                   })}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </>
         )}
 
