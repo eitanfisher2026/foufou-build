@@ -18,7 +18,7 @@ const auth = firebase.auth();
 const storage = firebase.storage();
 
 // Constants
-const VERSION = '1.0.18';
+const VERSION = '1.0.19';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -1975,6 +1975,17 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
   const [streetSaving, setStreetSaving]   = useState(false);
   const [streetPrompt, setStreetPrompt]   = useState(getStreetPrompt);
 
+  // Per-interest prompts — built from each interest's actual search config (types/
+  // textSearch/noGoogleSearch) so the AI gets grounded context instead of a one-size
+  // prompt for every interest. interestConfigs holds the raw settings/interestConfig
+  // data (types, textSearch, noGoogleSearch, favoritesPrompt) keyed by interest id.
+  const [interestConfigs, setInterestConfigs] = useState({});
+  const [showPromptManager, setShowPromptManager] = useState(false);
+  const [expandedPromptId, setExpandedPromptId] = useState(null);
+  const [editingPromptText, setEditingPromptText] = useState('');
+  const [buildingPromptId, setBuildingPromptId] = useState(null);
+  const [savingPromptId, setSavingPromptId] = useState(null);
+
   const switchProvider = (p) => { setFavProvider(p); setFavKey(getApiKey(p)); setFavModel(getModel(p)); };
 
   useEffect(() => {
@@ -1984,9 +1995,11 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
     Promise.all([
       db.ref('customInterests').once('value'),
       db.ref('settings/interestGroups').once('value'),
-    ]).then(([intSnap, grpSnap]) => {
+      db.ref('settings/interestConfig').once('value'),
+    ]).then(([intSnap, grpSnap, cfgSnap]) => {
       const raw = intSnap.val() || {};
       const groups = grpSnap.val() || {};
+      setInterestConfigs(cfgSnap.val() || {});
       const groupOrder = {};
       Object.keys(groups).forEach((gId, idx) => {
         groupOrder[gId] = groups[gId]?.order ?? idx;
@@ -2087,6 +2100,63 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
       }
     }
     return null;
+  };
+
+  // Builds a per-interest prompt: the current generic prompt (kept as-is, including its
+  // {cityName}/{interestName}/{count}/{bangkokExamples} placeholders) plus one grounding
+  // paragraph derived from the interest's actual Google Places search config. This is
+  // the gap that caused "Street Art & Murals" to return whole neighborhoods instead of
+  // specific spots - the generic prompt had no idea how that interest is actually
+  // searched, so the AI free-associated toward "an area to explore."
+  const buildInterestPrompt = (interest) => {
+    const cfg = interestConfigs[interest.id] || {};
+    let contextLine;
+    if (cfg.noGoogleSearch) {
+      contextLine = `SEARCH CONTEXT: this interest is curated — it is not searchable via Google Places at all, so there is no automatic existence check. Only suggest real, well-documented, specific places you are genuinely confident exist.`;
+    } else if (cfg.textSearch) {
+      contextLine = `SEARCH CONTEXT: this interest is normally searched in Google Places via the text query "${cfg.textSearch}". Suggest something that would genuinely surface from that exact search — a specific, named business, building, or landmark, not a general area or district.`;
+    } else if (Array.isArray(cfg.types) && cfg.types.length > 0) {
+      contextLine = `SEARCH CONTEXT: this interest is normally searched in Google Places using these place types: ${cfg.types.join(', ')}. Suggest something that would genuinely match one of these types — a specific, named business or landmark, not a general area or district.`;
+    } else {
+      contextLine = `SEARCH CONTEXT: no specific Google Places search configuration was found for this interest in foufou-build — suggest specific, named, real places regardless.`;
+    }
+    return `${favPrompt}\n\n${contextLine}`;
+  };
+
+  const createInterestPrompt = async (interest) => {
+    setBuildingPromptId(interest.id);
+    try {
+      const built = buildInterestPrompt(interest);
+      await db.ref('settings/interestConfig/' + interest.id + '/favoritesPrompt').set(built);
+      setInterestConfigs(prev => ({ ...prev, [interest.id]: { ...(prev[interest.id]||{}), favoritesPrompt: built } }));
+      setExpandedPromptId(interest.id);
+      setEditingPromptText(built);
+      showToast(`Prompt built for "${interest.labelEn}"`, 'success');
+    } finally {
+      setBuildingPromptId(null);
+    }
+  };
+
+  const saveInterestPrompt = async (interest) => {
+    setSavingPromptId(interest.id);
+    try {
+      await db.ref('settings/interestConfig/' + interest.id + '/favoritesPrompt').set(editingPromptText);
+      setInterestConfigs(prev => ({ ...prev, [interest.id]: { ...(prev[interest.id]||{}), favoritesPrompt: editingPromptText } }));
+      showToast(`Prompt saved for "${interest.labelEn}"`, 'success');
+    } finally {
+      setSavingPromptId(null);
+    }
+  };
+
+  const deleteInterestPrompt = async (interest) => {
+    await db.ref('settings/interestConfig/' + interest.id + '/favoritesPrompt').remove();
+    setInterestConfigs(prev => {
+      const next = { ...prev };
+      if (next[interest.id]) { const { favoritesPrompt, ...rest } = next[interest.id]; next[interest.id] = rest; }
+      return next;
+    });
+    setExpandedPromptId(null);
+    showToast(`Reverted "${interest.labelEn}" to the generic prompt`, 'success');
   };
 
   // Streets need name-only dedup — the 150m proximity check above is meant for point
@@ -2277,7 +2347,8 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
       // Step 1: AI generation
       setGenProgress(`Generating ${label}`);
       const examples = await getBangkokExamples(interest.id);
-      const prompt = favPrompt
+      const promptTemplate = interestConfigs[interest.id]?.favoritesPrompt || favPrompt;
+      const prompt = promptTemplate
         .replace(/\{cityName\}/g, city.nameEn || city.name)
         .replace(/\{interestName\}/g, interest.labelEn)
         .replace(/\{count\}/g, String(countPer))
@@ -2332,7 +2403,8 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
     try {
       const examples = await getBangkokExamples(interest.id);
       const excludeNames = entries.map(p => p.nameEn).filter(Boolean);
-      let prompt = favPrompt
+      const promptTemplate = interestConfigs[interest.id]?.favoritesPrompt || favPrompt;
+      let prompt = promptTemplate
         .replace(/\{cityName\}/g, city.nameEn || city.name)
         .replace(/\{interestName\}/g, interest.labelEn)
         .replace(/\{count\}/g, String(shortfall))
@@ -2602,6 +2674,79 @@ const FavoritesGenerator = ({ showToast, onBack, user }) => {
                           </span>
                         )}
                       </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Per-interest prompts — each built from that interest's actual Google Places
+                search config (types/textSearch/noGoogleSearch), so the AI gets grounded
+                context instead of one generic prompt for every interest. */}
+            <div style={{ background:'white', borderRadius:16, border:'1px solid #e2e8f0', padding:20, marginBottom:20 }}>
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', cursor:'pointer' }}
+                onClick={() => setShowPromptManager(v => !v)}>
+                <div style={{ fontSize:14, fontWeight:700, color:'#1e293b' }}>📝 Per-interest prompts</div>
+                <span style={{ fontSize:12, color:'#94a3b8' }}>{showPromptManager ? '▲ hide' : '▼ show'}</span>
+              </div>
+              {showPromptManager && (
+                <div style={{ marginTop:14, display:'flex', flexDirection:'column', gap:6 }}>
+                  <div style={{ fontSize:12, color:'#64748b', marginBottom:6 }}>
+                    Each interest uses the generic prompt above unless it has its own. Create one to bake
+                    in that interest's actual search type (text query / Google place types) — this is what
+                    fixed "Street Art & Murals" returning whole neighborhoods instead of specific spots.
+                  </div>
+                  {sortedInterests.map(interest => {
+                    const hasCustom = !!interestConfigs[interest.id]?.favoritesPrompt;
+                    const isExpanded = expandedPromptId === interest.id;
+                    return (
+                      <div key={interest.id} style={{ border:'1px solid #e2e8f0', borderRadius:10, padding:'8px 12px' }}>
+                        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                          <span style={{ fontSize:13, fontWeight:600, color:'#1e293b', flex:1 }}>
+                            {interest.icon?.startsWith('data:') || interest.icon?.startsWith('http')
+                              ? <img src={interest.icon} alt="" style={{ height:'1em', width:'1em', verticalAlign:'middle', objectFit:'contain' }} />
+                              : (interest.icon || '📍')}{' '}{interest.labelEn}
+                          </span>
+                          <span style={{ fontSize:11, color: hasCustom ? '#16a34a' : '#94a3b8' }}>
+                            {hasCustom ? '✓ custom prompt' : '— using generic'}
+                          </span>
+                          {hasCustom ? (
+                            <button onClick={() => {
+                                if (isExpanded) { setExpandedPromptId(null); }
+                                else { setExpandedPromptId(interest.id); setEditingPromptText(interestConfigs[interest.id].favoritesPrompt); }
+                              }}
+                              style={{ fontSize:11, padding:'4px 10px', borderRadius:6, border:'1px solid #c7d2fe', background:'#eef2ff', color:'#4338ca', cursor:'pointer' }}>
+                              {isExpanded ? 'Close' : '📄 View'}
+                            </button>
+                          ) : (
+                            <button onClick={() => createInterestPrompt(interest)} disabled={buildingPromptId === interest.id}
+                              style={{ fontSize:11, padding:'4px 10px', borderRadius:6, border:'1px solid #fde68a', background:'#fefce8', color:'#92400e', cursor: buildingPromptId === interest.id ? 'default' : 'pointer' }}>
+                              {buildingPromptId === interest.id ? 'Building...' : '✨ Create'}
+                            </button>
+                          )}
+                        </div>
+                        {isExpanded && hasCustom && (
+                          <div style={{ marginTop:10, display:'flex', flexDirection:'column', gap:8 }}>
+                            <textarea value={editingPromptText} onChange={e => setEditingPromptText(e.target.value)}
+                              rows={12} spellCheck={false}
+                              style={{ width:'100%', padding:'8px 10px', border:'1px solid #e2e8f0', borderRadius:8, fontSize:12, fontFamily:'monospace', outline:'none', resize:'vertical', lineHeight:1.5, boxSizing:'border-box' }} />
+                            <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+                              <button onClick={() => deleteInterestPrompt(interest)}
+                                style={{ fontSize:11, padding:'5px 12px', borderRadius:6, border:'1px solid #fca5a5', background:'white', color:'#ef4444', cursor:'pointer' }}>
+                                Revert to generic
+                              </button>
+                              <button onClick={() => createInterestPrompt(interest)} disabled={buildingPromptId === interest.id}
+                                style={{ fontSize:11, padding:'5px 12px', borderRadius:6, border:'1px solid #fde68a', background:'#fefce8', color:'#92400e', cursor:'pointer' }}>
+                                🔄 Rebuild from config
+                              </button>
+                              <button onClick={() => saveInterestPrompt(interest)} disabled={savingPromptId === interest.id}
+                                style={{ fontSize:11, padding:'5px 14px', borderRadius:6, border:'none', background:'#d97706', color:'white', fontWeight:'bold', cursor:'pointer' }}>
+                                {savingPromptId === interest.id ? 'Saving...' : 'Save'}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     );
                   })}
                 </div>
