@@ -18,7 +18,7 @@ const auth = firebase.auth();
 const storage = firebase.storage();
 
 // Constants
-const VERSION = '1.0.19';
+const VERSION = '1.0.20';
 
 // AI provider configuration
 const AI_PROVIDERS = {
@@ -4662,8 +4662,11 @@ const CityList = ({ onAddCity, onEditCity, showToast }) => {
     e.stopPropagation();
     setStatsLoading(city.id);
     try {
-      const snap = await db.ref(`cities/${city.id}/locations`).once('value');
-      const data = snap.val() || {};
+      const [locSnap, routeSnap] = await Promise.all([
+        db.ref(`cities/${city.id}/locations`).once('value'),
+        db.ref(`cities/${city.id}/routes`).once('value'),
+      ]);
+      const data = locSnap.val() || {};
       const locs = Object.values(data);
       const totalBytes = JSON.stringify(data).length;
       let embeddedCount = 0, embeddedBytes = 0, storageCount = 0, noImageCount = 0;
@@ -4673,9 +4676,16 @@ const CityList = ({ onAddCity, onEditCity, showToast }) => {
         else if (typeof img === 'string' && img.startsWith('http')) { storageCount++; }
         else { noImageCount++; }
       });
+      // Draft = not yet approved and not blacklisted — same definition the app itself uses.
+      const draftFavorites = locs.filter(l => l && l.status !== 'blacklist' && !l.locked).length;
+      const routes = Object.values(routeSnap.val() || {});
+      const draftTrails = routes.filter(r => r && !r.locked).length;
       setStatsModal({
         city,
         totalLocations: locs.length,
+        draftFavorites,
+        totalTrails: routes.length,
+        draftTrails,
         totalKB: Math.round(totalBytes / 1024),
         embeddedCount,
         embeddedKB: Math.round(embeddedBytes / 1024),
@@ -4769,10 +4779,30 @@ const CityList = ({ onAddCity, onEditCity, showToast }) => {
                 style={{ background:'none', border:'none', cursor:'pointer', fontSize:18, color:'#94a3b8' }}>✕</button>
             </div>
             <div style={{ display:'flex', flexDirection:'column', gap:10, fontSize:13 }}>
-              <div style={{ display:'flex', justifyContent:'space-between' }}>
-                <span style={{ color:'#64748b' }}>Total locations</span>
-                <span style={{ fontWeight:700, color:'#1e293b' }}>{statsModal.totalLocations}</span>
-              </div>
+              {statsModal.totalLocations > 0 && (
+                <div style={{ display:'flex', justifyContent:'space-between' }}>
+                  <span style={{ color:'#64748b' }}>Total favorites</span>
+                  <span style={{ fontWeight:700, color:'#1e293b' }}>{statsModal.totalLocations}</span>
+                </div>
+              )}
+              {statsModal.draftFavorites > 0 && (
+                <div style={{ display:'flex', justifyContent:'space-between' }}>
+                  <span style={{ color:'#64748b' }}>Draft favorites</span>
+                  <span style={{ fontWeight:700, color:'#d97706' }}>{statsModal.draftFavorites}</span>
+                </div>
+              )}
+              {statsModal.totalTrails > 0 && (
+                <div style={{ display:'flex', justifyContent:'space-between' }}>
+                  <span style={{ color:'#64748b' }}>Total trails</span>
+                  <span style={{ fontWeight:700, color:'#1e293b' }}>{statsModal.totalTrails}</span>
+                </div>
+              )}
+              {statsModal.draftTrails > 0 && (
+                <div style={{ display:'flex', justifyContent:'space-between' }}>
+                  <span style={{ color:'#64748b' }}>Draft trails</span>
+                  <span style={{ fontWeight:700, color:'#d97706' }}>{statsModal.draftTrails}</span>
+                </div>
+              )}
               <div style={{ display:'flex', justifyContent:'space-between' }}>
                 <span style={{ color:'#64748b' }}>Database size (locations)</span>
                 <span style={{ fontWeight:700, color: statsModal.totalKB > 5000 ? '#dc2626' : '#1e293b' }}>{fmtSize(statsModal.totalKB)}</span>
