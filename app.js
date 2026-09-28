@@ -276,7 +276,7 @@ const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
 ];
-// MapTiler streets-v2 -- same key + URL as foufou-dev (domain eitanfisher2026.github.io is allowed)
+// MapTiler streets-v2 -- same key + URL as FouFou (domain eitanfisher2026.github.io is allowed)
 const MAPTILER_KEY = 'Uvu44hp7joiCfp72GhTj';
 const MAP_TILES    = 'https://api.maptiler.com/maps/streets-v2/256/{z}/{x}/{y}.png?key=' + MAPTILER_KEY;
 const MAP_ATTR     = '&copy; <a href="https://www.maptiler.com/">MapTiler</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
@@ -4648,8 +4648,8 @@ const CityList = ({ onAddCity, onEditCity, showToast }) => {
       .catch(err => showToast && showToast('Publish failed: ' + err.message, 'error'));
   };
 
-  // foufou-build, FouFou-dev, and FouFou (prod) are all eitanfisher2026.github.io/<repo>/ —
-  // same scheme+host+port means same origin, so they already share localStorage directly.
+  // foufou-build and FouFou are both eitanfisher2026.github.io/<repo>/ —
+  // same scheme+host+port means same origin, so they share localStorage directly.
   const refreshOwnCache = (e, city) => {
     e.stopPropagation();
     localStorage.removeItem('foufou_locations_cache_' + city.id);

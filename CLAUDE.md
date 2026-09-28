@@ -2,7 +2,7 @@
 
 Admin tool for managing FouFou's cities — areas, interests/categories, and configuration data that the main FouFou app reads. Not a public-facing app.
 
-- **Firebase project:** `bangkok-explorer` — the **same** Firebase project as [FouFou-dev](../FouFou-dev/CLAUDE.md)/[FouFou](../FouFou/CLAUDE.md); this tool edits that shared data, it doesn't have its own backend.
+- **Firebase project:** `bangkok-explorer` — the **same** Firebase project as [FouFou](../FouFou/CLAUDE.md) (the only FouFou environment; FouFou-dev was retired 2026-09-28); this tool edits that shared data, it doesn't have its own backend.
 - Access requires `userRole >= 2` (admin) — same role model as the main app (0=regular, 1=editor, 2=admin).
 - Sibling of the FouFou app repos, not of Buli/Roy-News/FouFou-Pets (different owner-project cluster).
 
